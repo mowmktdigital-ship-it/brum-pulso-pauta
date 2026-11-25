@@ -385,6 +385,100 @@ def resumen_total_paid(values, month_idx):
     return None
 
 
+def resumen_blocks(values):
+    """Parsea la pestaña Resumen: {mes_idx: {nombre_fila_lower: {'inv','leads','ventas'}}}."""
+    out, cur = {}, None
+    for r in values or []:
+        label = (r[1] if len(r) > 1 else '').strip()
+        if label.upper() in MESES:
+            cur = MESES.index(label.upper())
+            out[cur] = {}
+            continue
+        if cur is None or not label or label.lower() in ('origen', 'canal'):
+            continue
+        out[cur][label.lower()] = {
+            'nombre': label,
+            'inv': parse_num(r[2] if len(r) > 2 else None),
+            'leads': parse_num(r[3] if len(r) > 3 else None),
+            'ventas': parse_num(r[5] if len(r) > 5 else None),
+        }
+    return out
+
+
+CANALES_PAGOS = [('google ads', 'Google Ads'), ('meta formulario', 'Meta Formulario'),
+                 ('meta oportunidades', 'Meta Oportunidades'), ('whatsapp - filtrado', 'WhatsApp filtrado')]
+
+
+def render_costo_por_venta(blocks, now):
+    """Costo por venta por canal del último mes cerrado + % inversión vs. % ventas."""
+    idx = (now.month - 2) % 12
+    b = blocks.get(idx)
+    tp = (b or {}).get('total paid')
+    if not b or not tp or not tp.get('inv') or not tp.get('ventas'):
+        return '<tr><td colspan="6">Sin datos del mes anterior en la pestaña Resumen del Excel de Lu.</td></tr>', MESES[idx].capitalize()
+    filas = []
+    for key, nombre in CANALES_PAGOS:
+        c = b.get(key)
+        if not c or not c.get('inv'):
+            continue
+        ventas = c.get('ventas') or 0
+        filas.append({'nombre': nombre, 'inv': c['inv'], 'ventas': ventas,
+                      'cpv': (c['inv'] / ventas) if ventas else None,
+                      'pinv': c['inv'] / tp['inv'] * 100, 'pven': ventas / tp['ventas'] * 100})
+    validos = [f['cpv'] for f in filas if f['cpv']]
+    mejor = min(validos) if validos else None
+    tr = ''
+    for f in sorted(filas, key=lambda f: (f['cpv'] is None, f['cpv'] or 0)):
+        if f['cpv'] is None:
+            cpv = 'sin ventas'
+        else:
+            cpv = money(f['cpv']) + (' <span class="badge ok">el más barato</span>' if f['cpv'] == mejor else '')
+        diff = f['pven'] - f['pinv']
+        if not f['ventas']:
+            lectura = 'sin ventas en el mes'
+        else:
+            lectura = 'vende más de lo que gasta' if diff > 2 else ('gasta más de lo que vende' if diff < -2 else 'parejo')
+        tr += ('<tr><td>{n}</td><td class="num">{inv}</td><td class="num">{v}</td><td class="num">{cpv}</td>'
+               '<td class="num">{pi} / {pv}</td><td>{l}</td></tr>').format(
+            n=esc(f['nombre']), inv=money(f['inv']), v=num(f['ventas']), cpv=cpv,
+            pi=pct(f['pinv'], 0), pv=pct(f['pven'], 0), l=lectura)
+    tr += ('<tr style="font-weight:600"><td>Total pauta</td><td class="num">{inv}</td><td class="num">{v}</td>'
+           '<td class="num">{cpv}</td><td class="num">100% / 100%</td><td></td></tr>').format(
+        inv=money(tp['inv']), v=num(tp['ventas']), cpv=money(tp['inv'] / tp['ventas']))
+    return tr, MESES[idx].capitalize()
+
+
+def render_historico(blocks, now, n=6):
+    """Mini gráficos de los últimos n meses cerrados (fila Total Paid de Resumen)."""
+    meses = []
+    for k in range(n, 0, -1):
+        idx = (now.month - 1 - k) % 12
+        tp = (blocks.get(idx) or {}).get('total paid')
+        if tp and tp.get('inv'):
+            meses.append((MESES[idx][:3].capitalize(), tp))
+    if not meses:
+        return '<p class="section-note">Sin datos históricos en la pestaña Resumen del Excel de Lu.</p>'
+    series = [
+        ('Inversión en pauta', [tp['inv'] for _, tp in meses], money_m),
+        ('Costo por lead de la pauta', [(tp['inv'] / tp['leads']) if tp.get('leads') else None for _, tp in meses],
+         lambda v: '$' + f'{v / 1000:.1f}'.replace('.', ',') + 'k'),
+        ('Costo por venta de la pauta', [(tp['inv'] / tp['ventas']) if tp.get('ventas') else None for _, tp in meses],
+         lambda v: '$' + f'{v / 1000:.0f}' + 'k'),
+    ]
+    out = ''
+    for titulo, vals, fmt in series:
+        mx = max([v for v in vals if v] + [1])
+        cols = ''
+        for (lab, _), v in zip(meses, vals):
+            h = (v / mx * 100) if v else 0
+            cols += ('<div class="vcol"><span class="vval">{val}</span><div class="vbar-track">'
+                     '<div class="vbar" style="height:{h:.0f}%"></div></div><span class="vlab">{lab}</span></div>').format(
+                val=fmt(v) if v else '—', h=h, lab=lab)
+        out += '<div class="chart-box mini"><div class="mini-title">{t}</div><div class="vchart">{c}</div></div>'.format(
+            t=esc(titulo), c=cols)
+    return '<div class="minis">' + out + '</div>'
+
+
 def history_week_ago(history, today):
     """Entrada de hace ~7 días (6 a 8), del mismo mes. Prefiere exactamente 7."""
     best = None
@@ -611,6 +705,9 @@ def main():
     except (IndexError, TypeError, ValueError):
         ritmo_dias = (now.day, summary['dias_totales'] - now.day)
     signals = calc_signals(excel_rows, summary, google_raw, resumen_values, presupuesto, now, ritmo_dias)
+    blocks = resumen_blocks(resumen_values)
+    cpv_rows, cpv_mes = render_costo_por_venta(blocks, now)
+    historico_html = render_historico(blocks, now)
     signals_html = render_signals(signals, history_week_ago(history, now.date()))
     history = update_history(history, signals, now.date())
     with open(os.path.join(HERE, 'history.json'), 'w', encoding='utf-8') as f:
@@ -788,6 +885,7 @@ def main():
         dealer_rows=dealer_tr,
         channel_rows=channel_tr,
         signals_html=signals_html,
+        cpv_rows=cpv_rows, cpv_mes=cpv_mes, historico_html=historico_html,
     )
 
     out_path = os.path.join(HERE, 'output.html')
@@ -893,6 +991,16 @@ TEMPLATE = r"""<!doctype html>
   .sig-delta.bad {{ color: var(--color-bad); }}
   .sig-context {{ font-size: 0.78em; color: var(--color-fg-muted); border-top: 1px solid var(--color-border-line); padding-top: 6px; margin-top: 2px; }}
   table.pulso-table tr.group-row td {{ font-weight: 600; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.5px; color: var(--color-fg-muted); background: var(--color-panel); }}
+  .minis {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(16em, 1fr)); gap: 14px; }}
+  .chart-box.mini {{ margin-bottom: 0; }}
+  .mini-title {{ font-size: 0.8em; color: var(--color-fg-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }}
+  .vchart {{ display: flex; gap: 6px; align-items: flex-end; height: 120px; }}
+  .vcol {{ flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; }}
+  .vbar-track {{ flex: 1; width: 100%; display: flex; align-items: flex-end; }}
+  .vbar {{ width: 100%; background: var(--color-fg-muted); border-radius: 4px 4px 0 0; min-height: 2px; }}
+  .vcol:last-child .vbar {{ background: var(--color-fg); }}
+  .vval {{ font-size: 0.68em; font-variant-numeric: tabular-nums; white-space: nowrap; }}
+  .vlab {{ font-size: 0.72em; color: var(--color-fg-muted); }}
   .badge.nodata, .badge.nometa {{ background: transparent; color: var(--color-fg-muted); border: 1px dashed var(--color-fg-muted); }}
 
   footer {{ margin-top: 40px; color: var(--color-fg-muted); font-size: 0.78em; }}
@@ -1015,6 +1123,23 @@ TEMPLATE = r"""<!doctype html>
     </div>
   </section>
 
+  <section id="costo-venta">
+    <h2>Costo por venta por canal · {cpv_mes}</h2>
+    <p class="section-note">Último mes con ventas cerradas, según la pestaña Resumen del Excel de Lu. El costo por lead no alcanza para decidir: un canal con leads caros puede convertir más a venta. La columna "% inversión / % ventas" muestra qué parte de la inversión de pauta se llevó cada canal y qué parte de las ventas de pauta generó.</p>
+    <div class="dash-table-wrap">
+      <table class="pulso-table">
+        <thead><tr><th>Canal</th><th class="num">Inversión</th><th class="num">Ventas</th><th class="num">Costo por venta</th><th class="num">% inversión / % ventas</th><th>Lectura</th></tr></thead>
+        <tbody>{cpv_rows}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="historico">
+    <h2>Histórico de los últimos 6 meses</h2>
+    <p class="section-note">Total de pauta por mes cerrado, según la pestaña Resumen del Excel de Lu. Montos en pesos de cada mes, sin ajustar por inflación. Costo por lead y costo por venta recalculados como inversión ÷ leads e inversión ÷ ventas.</p>
+    {historico_html}
+  </section>
+
   <section id="dealers">
     <h2>CPL por concesionario vs. promedio de cuenta</h2>
     <p class="section-note">Top 10 marcas por inversión en el Excel, mes en curso. El promedio de cuenta surge de dividir la inversión total pauta por los leads reales totales del mes (incluye leads orgánicos, que diluyen el promedio).</p>
@@ -1040,6 +1165,7 @@ TEMPLATE = r"""<!doctype html>
     <summary>Cómo se construye este pulso</summary>
     <ul>
       <li>Señales de cuenta: (1) proyección de leads a fin de mes ÷ objetivo, del Excel de Lu — verde desde 100%, amarillo entre 80% y 100%, rojo debajo de 80%; el contexto cuenta los concesionarios con objetivo que proyectan menos del 60% de su meta. (2) Costo por lead de la pauta del mes (fila "Total Paid" de la pestaña Resumen de Lu) contra el mes anterior — verde si es igual o más barato, amarillo hasta 15% más caro, rojo si sube más. (3) Gasto real Meta + Google proyectado a fin de mes contra el presupuesto del mes — verde entre 90% y 105%, amarillo entre 80% y 115%, rojo fuera de eso; sin presupuesto cargado muestra "Sin dato". (4) Presupuesto extra estimado: leads que faltan entre la proyección a fin de mes y el objetivo × costo por lead actual de la pauta; se recalcula cada día sobre la proyección, sin esperar al cierre. Es un piso: supone que los leads extra cuestan lo mismo que los actuales. (5) Ritmo diario: leads reales ÷ días transcurridos, contra los leads por día que harían falta en los días restantes (días según el Excel de Lu); toma el mismo color que la señal 1. La comparación "hace una semana" usa el valor guardado 7 días antes dentro del mismo mes.</li>
+      <li>Costo por venta por canal e histórico: salen de la pestaña Resumen del Excel de Lu (último mes cerrado y los 6 meses cerrados anteriores). El costo por venta se recalcula siempre como inversión ÷ ventas, sin usar la columna del Excel, para que todos los meses se calculen igual.</li>
       <li>Meta Ads y Google Ads: gasto y resultados reales desde el día 1 del mes en curso hasta hoy. Esta página se regenera una vez por día (no en vivo, a diferencia de la versión que vive en Claude).</li>
       <li>Excel de Lu: fila TOTAL y detalle por concesionario de la hoja "INV x CONCE Proyección". Si Lu arma una pestaña nueva para el próximo mes con otro nombre, hay que avisarle a Claude para actualizar el rango.</li>
       <li>Campaña 1 (Prioritarios), Campaña 2 (Genérica BYD + no prioritarios) y Campaña 3 (Escala Seal 5, sumada el 25/11) son un trabajo aparte que se le hace directamente a la terminal BYD, no a los concesionarios Brum. Se excluyen por completo de este tablero — de la tabla de Meta Ads, de la inversión total y de cualquier cruce — porque nunca van a aparecer en el Excel de Lu (corregido 20/11 por aclaración directa de Agos).</li>
