@@ -62,7 +62,7 @@ def build_meta_rows(raw):
         if cpr is not None and not (isinstance(cpr, str) and cpr.startswith('Not available')):
             cpl = float(cpr)
         rows.append({
-            'campana': e['name'], 'estado': 'Activa', 'gasto': spend,
+            'campana': e['name'], 'estado': 'Activa', 'gasto': spend, 'objetivo': e.get('objective') or '',
             'resultado_tipo': resultado_tipo, 'resultado': resultado, 'cpl': cpl,
         })
     return rows
@@ -190,7 +190,9 @@ def calc_account_summary(excel_rows, meta_rows, google_rows, now):
 # ni a los reportes de Meta, ni a la inversion total, ni al cruce con el Excel de Lu (nunca
 # van a aparecer ahi). Se excluyen por completo de meta_rows en main() antes de cualquier
 # calculo.
-EXCLUDED_CAMPAIGN_NAMES = ['Campaña 1 — Prioritarios', 'Campaña 2 — Genérica BYD + no prioritarios']
+# 25/11 (Agos): se suma Campaña 3 — Escala Seal 5, que también es del negocio BYD terminal.
+EXCLUDED_CAMPAIGN_NAMES = ['Campaña 1 — Prioritarios', 'Campaña 2 — Genérica BYD + no prioritarios',
+                           'Campaña 3 — Escala Seal 5']
 FORMULARIO_NAMES = ['Meta Formulario Por Marca']
 TRAFICO_NAMES = ['Tráfico al Sitio', 'Orgánicas - Tráfico IG Perfil | Test', 'Remarketing']
 FILTRADO_NAMES = ['Campañas Filtrado de Leads']
@@ -613,16 +615,25 @@ def main():
         json.dump(history, f, ensure_ascii=False, indent=1)
 
     meta_tr = ''
-    for r in sorted(meta_rows, key=lambda r: -r['gasto']):
-        meta_tr += (
-            '<tr><td>{campana}</td><td>{estado}</td><td class="num">{gasto}</td>'
-            '<td>{rtipo}</td><td class="num">{resultado}</td><td class="num">{cpl}</td></tr>'
-        ).format(
-            campana=esc(r['campana']), estado=esc(r['estado']), gasto=money(r['gasto']),
-            rtipo=esc(RESULTADO_LABELS.get(r['resultado_tipo'], 'Otro resultado')),
-            resultado=num(r['resultado']) if r['resultado'] is not None else '—',
-            cpl=money(r['cpl']) if r['cpl'] is not None else '—',
-        )
+    grupos = [
+        ('Campañas de leads', [r for r in meta_rows if r['objetivo'] == 'OUTCOME_LEADS']),
+        ('Otras campañas (tráfico, interacción, mensajes)', [r for r in meta_rows if r['objetivo'] != 'OUTCOME_LEADS']),
+    ]
+    for titulo_grupo, filas in grupos:
+        if not filas:
+            continue
+        meta_tr += ('<tr class="group-row"><td colspan="2">{t}</td><td class="num">{g}</td>'
+                    '<td colspan="3"></td></tr>').format(t=esc(titulo_grupo), g=money(sum(r['gasto'] for r in filas)))
+        for r in sorted(filas, key=lambda r: -r['gasto']):
+            meta_tr += (
+                '<tr><td>{campana}</td><td>{estado}</td><td class="num">{gasto}</td>'
+                '<td>{rtipo}</td><td class="num">{resultado}</td><td class="num">{cpl}</td></tr>'
+            ).format(
+                campana=esc(r['campana']), estado=esc(r['estado']), gasto=money(r['gasto']),
+                rtipo=esc(RESULTADO_LABELS.get(r['resultado_tipo'], 'Otro resultado')),
+                resultado=num(r['resultado']) if r['resultado'] is not None else '—',
+                cpl=money(r['cpl']) if r['cpl'] is not None else '—',
+            )
     if not meta_rows:
         meta_tr = '<tr><td colspan="6">—</td></tr>'
 
@@ -879,6 +890,7 @@ TEMPLATE = r"""<!doctype html>
   .sig-delta.good {{ color: var(--color-ok); }}
   .sig-delta.bad {{ color: var(--color-bad); }}
   .sig-context {{ font-size: 0.78em; color: var(--color-fg-muted); border-top: 1px solid var(--color-border-line); padding-top: 6px; margin-top: 2px; }}
+  table.pulso-table tr.group-row td {{ font-weight: 600; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.5px; color: var(--color-fg-muted); background: var(--color-panel); }}
   .badge.nodata, .badge.nometa {{ background: transparent; color: var(--color-fg-muted); border: 1px dashed var(--color-fg-muted); }}
 
   footer {{ margin-top: 40px; color: var(--color-fg-muted); font-size: 0.78em; }}
@@ -958,7 +970,7 @@ TEMPLATE = r"""<!doctype html>
 
   <section id="meta">
     <h2>Meta Ads por campaña</h2>
-    <p class="section-note">Gasto y costo por resultado de cada campaña activa, mes en curso. El tipo de resultado varía según el objetivo de la campaña.</p>
+    <p class="section-note">Gasto y costo por resultado de cada campaña activa, mes en curso, agrupadas según el objetivo de la campaña en Meta: primero las de leads, después el resto. No incluye las Campañas 1, 2 y 3 (BYD terminal).</p>
     <div class="dash-table-wrap">
       <table class="pulso-table">
         <thead><tr><th>Campaña</th><th>Estado</th><th class="num">Gasto</th><th>Resultado</th><th class="num">Cantidad</th><th class="num">Costo / resultado</th></tr></thead>
@@ -992,7 +1004,7 @@ TEMPLATE = r"""<!doctype html>
 
   <section id="canales">
     <h2>Leads por canal: CPL promedio y conversión a venta</h2>
-    <p class="section-note">Leads reales, inversión, costo por lead y tasa de conversión a venta de cada canal, según el Excel de Lu (fila TOTAL), mes en curso. Los canales orgánicos no tienen gasto de pauta asociado, por eso no muestran CPL. No incluye Campaña 1/2 (BYD), que son un negocio aparte y no están en este Excel.</p>
+    <p class="section-note">Leads reales, inversión, costo por lead y tasa de conversión a venta de cada canal, según el Excel de Lu (fila TOTAL), mes en curso. Los canales orgánicos no tienen gasto de pauta asociado, por eso no muestran CPL. No incluye las Campañas 1, 2 y 3 (BYD terminal), que son un negocio aparte y no están en este Excel.</p>
     <div class="dash-table-wrap">
       <table class="pulso-table">
         <thead><tr><th>Canal</th><th class="num">Leads</th><th class="num">Inversión</th><th class="num">CPL</th><th class="num">Ventas</th><th class="num">Tasa de conv. a venta</th></tr></thead>
@@ -1028,7 +1040,7 @@ TEMPLATE = r"""<!doctype html>
       <li>Señales de cuenta: (1) proyección de leads a fin de mes ÷ objetivo, del Excel de Lu — verde desde 100%, amarillo entre 80% y 100%, rojo debajo de 80%; el contexto cuenta los concesionarios con objetivo que proyectan menos del 60% de su meta. (2) Costo por lead de la pauta del mes (fila "Total Paid" de la pestaña Resumen de Lu) contra el mes anterior — verde si es igual o más barato, amarillo hasta 15% más caro, rojo si sube más. (3) Gasto real Meta + Google proyectado a fin de mes contra el presupuesto del mes — verde entre 90% y 105%, amarillo entre 80% y 115%, rojo fuera de eso; sin presupuesto cargado muestra "Sin dato". (4) Presupuesto extra estimado: leads que faltan entre la proyección a fin de mes y el objetivo × costo por lead actual de la pauta; se recalcula cada día sobre la proyección, sin esperar al cierre. Es un piso: supone que los leads extra cuestan lo mismo que los actuales. (5) Ritmo diario: leads reales ÷ días transcurridos, contra los leads por día que harían falta en los días restantes (días según el Excel de Lu); toma el mismo color que la señal 1. La comparación "hace una semana" usa el valor guardado 7 días antes dentro del mismo mes.</li>
       <li>Meta Ads y Google Ads: gasto y resultados reales desde el día 1 del mes en curso hasta hoy. Esta página se regenera una vez por día (no en vivo, a diferencia de la versión que vive en Claude).</li>
       <li>Excel de Lu: fila TOTAL y detalle por concesionario de la hoja "INV x CONCE Proyección". Si Lu arma una pestaña nueva para el próximo mes con otro nombre, hay que avisarle a Claude para actualizar el rango.</li>
-      <li>Campaña 1 (Prioritarios) y Campaña 2 (Genérica BYD + no prioritarios) son un trabajo aparte que se le hace directamente a la terminal BYD, no a los concesionarios Brum. Se excluyen por completo de este tablero — de la tabla de Meta Ads, de la inversión total y de cualquier cruce — porque nunca van a aparecer en el Excel de Lu (corregido 20/11 por aclaración directa de Agos).</li>
+      <li>Campaña 1 (Prioritarios), Campaña 2 (Genérica BYD + no prioritarios) y Campaña 3 (Escala Seal 5, sumada el 25/11) son un trabajo aparte que se le hace directamente a la terminal BYD, no a los concesionarios Brum. Se excluyen por completo de este tablero — de la tabla de Meta Ads, de la inversión total y de cualquier cruce — porque nunca van a aparecer en el Excel de Lu (corregido 20/11 por aclaración directa de Agos).</li>
       <li>El gap se reparte en varios componentes con la misma metodología del informe semanal. Meta Oportunidades = campañas "Leads + nombre del concesionario" (corregido el 18/11 por aclaración directa de Lu). Las demás campañas de Meta se mapean por su nombre exacto a un bucket; si Meta cambia o agrega campañas, puede aparecer una fila "Campañas Meta sin clasificar": es la señal de que hay que revisar el mapeo.</li>
       <li>El CPL por concesionario usa inversión reportada en el Excel ÷ leads reales reportados en el Excel, igual que en el informe semanal. El semáforo es puramente por CPL vs. promedio: más de 2x es "Revisar prioritario", entre 1,3x y 2x es "Revisar", entre 1x y 1,3x es "A vigilar", 1x o menos es "OK".</li>
       <li>Leads por canal: toma directamente las columnas que el Excel de Lu ya calcula por canal (Google Pauta, Meta Oportunidades, Meta Formulario, Filtrado de Leads/WhatsApp, y los dos orgánicos). El CPL de cada canal es inversión ÷ leads reales de ese canal; la tasa de conversión a venta es ventas ÷ leads reales de ese canal, tal cual las carga Lu. La fila TOTAL incluye los leads orgánicos, que diluyen el CPL y la tasa de conversión promedio de cuenta.</li>
