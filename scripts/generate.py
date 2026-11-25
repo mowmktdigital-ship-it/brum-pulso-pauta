@@ -331,6 +331,211 @@ def badge(estado):
     return f'<span class="badge {cls}">{esc(estado)}</span>'
 
 
+# ---------------------------------------------------------------------------
+# SEÑALES DE CUENTA (agregado 25/11). Tres indicadores con semáforo arriba de
+# todo + comparación contra el valor de hace una semana (history.json).
+# Archivos opcionales: resumen_values.json (pestaña "Resumen" del Excel de Lu),
+# presupuesto.json ({"YYYY-MM": monto}) e history.json. Si faltan, la señal
+# correspondiente muestra "Sin dato" en vez de abortar.
+# ---------------------------------------------------------------------------
+MESES = ['ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO',
+         'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE']
+
+# Umbrales de semáforo (fijos)
+PROY_VERDE, PROY_AMARILLO = 100.0, 80.0          # % del objetivo proyectado
+CPL_AMARILLO_MAX = 15.0                          # % arriba del mes anterior
+GASTO_VERDE = (90.0, 105.0)                      # % del presupuesto proyectado
+GASTO_AMARILLO = (80.0, 115.0)
+ATRASADO_PCT = 60.0                              # concesionario "atrasado"
+
+
+def load_optional(name, default):
+    p = os.path.join(HERE, name)
+    if not os.path.exists(p):
+        return default
+    try:
+        with open(p, encoding='utf-8') as f:
+            return json.load(f)
+    except (ValueError, OSError):
+        return default
+
+
+def resumen_total_paid(values, month_idx):
+    """Devuelve {'inv','leads','cpl'} de la fila 'Total Paid' del bloque del mes
+    (month_idx 0-11) en la pestaña Resumen, o None si no está."""
+    if not values:
+        return None
+    target = MESES[month_idx]
+    in_block = False
+    for r in values:
+        label = (r[1] if len(r) > 1 else '').strip().upper()
+        if label in MESES:
+            in_block = (label == target)
+            continue
+        if in_block and label == 'TOTAL PAID':
+            cpl = parse_num(r[4] if len(r) > 4 else None)
+            if cpl is None:
+                return None
+            return {'inv': parse_num(r[2] if len(r) > 2 else None),
+                    'leads': parse_num(r[3] if len(r) > 3 else None), 'cpl': cpl}
+    return None
+
+
+def history_week_ago(history, today):
+    """Entrada de hace ~7 días (6 a 8), del mismo mes. Prefiere exactamente 7."""
+    best = None
+    for h in history:
+        try:
+            d = datetime.date.fromisoformat(h['fecha'])
+        except (KeyError, ValueError):
+            continue
+        diff = (today - d).days
+        if 6 <= diff <= 8 and d.month == today.month and d.year == today.year:
+            if best is None or abs(diff - 7) < abs(best[0] - 7):
+                best = (diff, h)
+    return best[1] if best else None
+
+
+def money_m(v):
+    if v is None:
+        return '—'
+    if abs(v) >= 1_000_000:
+        return '$' + f'{v / 1_000_000:.1f}'.replace('.', ',') + 'M'
+    return money(v)
+
+
+def calc_signals(excel_rows, summary, google_raw, resumen_values, presupuesto, now):
+    total = next((r for r in excel_rows if r['marca'] == 'TOTAL'), None) or {}
+    sig = {}
+
+    # 1 · Proyección de leads vs objetivo
+    proy_pct = summary['proyeccion_pct']
+    con_obj = [r for r in excel_rows if r['marca'] != 'TOTAL' and (r.get('objetivo_mes') or 0) > 0]
+    atrasados = [r for r in con_obj if ((r.get('proyectado_fin_mes') or 0) / r['objetivo_mes'] * 100) < ATRASADO_PCT]
+    if proy_pct is None:
+        estado = 'nodata'
+    elif proy_pct >= PROY_VERDE:
+        estado = 'ok'
+    elif proy_pct >= PROY_AMARILLO:
+        estado = 'warn'
+    else:
+        estado = 'bad'
+    sig['proy'] = {
+        'valor': proy_pct, 'estado': estado,
+        'contexto': '{} de {} concesionarios con objetivo proyectan menos del {}% de su meta'.format(
+            len(atrasados), len(con_obj), int(ATRASADO_PCT)) if con_obj else '',
+    }
+    sig['proy']['detalle'] = '{} leads proyectados a fin de mes, objetivo {}'.format(
+        num(summary['proyeccion_fin_mes']), num(summary['objetivo_mes'])) if proy_pct is not None else 'Sin datos del Excel de Lu'
+
+    # 2 · Costo por lead de la pauta vs mes anterior (pestaña Resumen de Lu)
+    cur = resumen_total_paid(resumen_values, now.month - 1)
+    prev_idx = (now.month - 2) % 12
+    prev = resumen_total_paid(resumen_values, prev_idx)
+    cpl = cur['cpl'] if cur else None
+    var = ((cpl / prev['cpl'] - 1) * 100) if (cpl is not None and prev and prev['cpl']) else None
+    if cpl is None:
+        estado = 'nodata'
+    elif var is None:
+        estado = 'nometa'
+    elif var <= 0:
+        estado = 'ok'
+    elif var <= CPL_AMARILLO_MAX:
+        estado = 'warn'
+    else:
+        estado = 'bad'
+    if cpl is None:
+        det = 'No se encontró el bloque del mes en la pestaña Resumen del Excel de Lu'
+    elif prev:
+        det ='{} vs. {} ({})'.format(('+' if var > 0 else '') + pct(var, 0), MESES[prev_idx].lower(), money(prev['cpl']))
+    else:
+        det = 'Sin dato del mes anterior para comparar'
+    sig['cpl'] = {
+        'valor': cpl, 'estado': estado, 'detalle': det,
+        'contexto': '{} leads pagos · inversión {}'.format(num(cur['leads']), money_m(cur['inv'])) if cur else '',
+    }
+
+    # 3 · Ritmo de gasto vs presupuesto del mes
+    dias = summary['dias_totales']
+    gasto_proy = None
+    if not google_raw.get('unavailable'):
+        meta_proj = summary['gasto_meta'] / now.day * dias
+        g_day = now.day
+        try:
+            asof = datetime.date.fromisoformat(google_raw.get('as_of', ''))
+            if asof.year == now.year and asof.month == now.month:
+                g_day = asof.day
+        except ValueError:
+            pass
+        gasto_proy = meta_proj + summary['gasto_google'] / g_day * dias
+    pres = (presupuesto or {}).get(now.strftime('%Y-%m'))
+    gasto_pct = (gasto_proy / pres * 100) if (gasto_proy is not None and pres) else None
+    if gasto_proy is None:
+        estado, det = 'nodata', 'Google Ads no disponible hoy: no se puede proyectar el gasto total'
+    elif gasto_pct is None:
+        estado, det = 'nodata', 'Falta el presupuesto del mes para comparar'
+    else:
+        lo, hi = GASTO_VERDE
+        alo, ahi = GASTO_AMARILLO
+        estado = 'ok' if lo <= gasto_pct <= hi else ('warn' if alo <= gasto_pct <= ahi else 'bad')
+        det = '{} del presupuesto ({})'.format(pct(gasto_pct, 0), money_m(pres))
+    sig['gasto'] = {
+        'valor': gasto_proy, 'pct': gasto_pct, 'estado': estado, 'detalle': det,
+        'contexto': 'Gasto real Meta + Google al día {} de {}, proyectado a fin de mes'.format(now.day, dias),
+    }
+    return sig
+
+
+ESTADO_LABELS = {'ok': 'Cumple', 'warn': 'Atención', 'bad': 'No cumple',
+                 'nodata': 'Sin dato', 'nometa': 'Sin comparación'}
+
+
+def render_signals(sig, week_ago):
+    def delta(key, fmt, higher_is_good):
+        if not week_ago or week_ago.get(key) is None or sig_val(key) is None:
+            return '<span class="sig-delta">Hace una semana: —</span>'
+        now_v, old_v = sig_val(key), week_ago[key]
+        if abs(now_v - old_v) < 1e-9:
+            arrow, cls = '=', ''
+        else:
+            up = now_v > old_v
+            arrow = '↑' if up else '↓'
+            cls = '' if higher_is_good is None else ('good' if up == higher_is_good else 'bad')
+        return '<span class="sig-delta {cls}">{a} hace una semana: {v}</span>'.format(cls=cls, a=arrow, v=fmt(old_v))
+
+    def sig_val(key):
+        return {'proy_pct': sig['proy']['valor'], 'cpl_pauta': sig['cpl']['valor'],
+                'gasto_proy': sig['gasto']['valor']}[key]
+
+    cards = [
+        ('¿Llegamos al objetivo de leads?', pct(sig['proy']['valor'], 0) if sig['proy']['valor'] is not None else '—',
+         'proyectado', sig['proy'], delta('proy_pct', lambda v: pct(v, 0), True)),
+        ('¿El lead pago está caro o barato?', money(sig['cpl']['valor']) if sig['cpl']['valor'] is not None else '—',
+         'costo por lead de la pauta', sig['cpl'], delta('cpl_pauta', money, False)),
+        ('¿Vamos bien de ritmo de gasto?', money_m(sig['gasto']['valor']),
+         'gasto proyectado a fin de mes', sig['gasto'], delta('gasto_proy', money_m, None)),
+    ]
+    out = ''
+    for titulo, valor, unidad, s, d in cards:
+        out += (
+            '<div class="sig-card {estado}"><div class="sig-head"><span class="sig-title">{titulo}</span>'
+            '<span class="badge {estado}">{label}</span></div>'
+            '<div class="sig-value">{valor} <span class="sig-unit">{unidad}</span></div>'
+            '<div class="sig-detail">{detalle}</div>{delta}'
+            '<div class="sig-context">{contexto}</div></div>'
+        ).format(estado=s['estado'], titulo=esc(titulo), label=ESTADO_LABELS[s['estado']], valor=esc(valor),
+                 unidad=esc(unidad), detalle=esc(s['detalle']), delta=d, contexto=esc(s.get('contexto', '')))
+    return out
+
+
+def update_history(history, sig, today):
+    entry = {'fecha': today.isoformat(), 'proy_pct': sig['proy']['valor'],
+             'cpl_pauta': sig['cpl']['valor'], 'gasto_proy': sig['gasto']['valor']}
+    history = [h for h in history if h.get('fecha') != entry['fecha']] + [entry]
+    history.sort(key=lambda h: h.get('fecha', ''))
+    return history[-120:]
+
+
 def main():
     meta_raw = load('meta_raw.json')
     google_raw = load('google_raw.json')
@@ -350,6 +555,15 @@ def main():
 
     google_unavailable = bool(google_raw.get('unavailable'))
     google_stale = (not google_unavailable) and google_raw.get('as_of') != now.strftime('%Y-%m-%d')
+
+    resumen_values = load_optional('resumen_values.json', [])
+    presupuesto = load_optional('presupuesto.json', {})
+    history = load_optional('history.json', [])
+    signals = calc_signals(excel_rows, summary, google_raw, resumen_values, presupuesto, now)
+    signals_html = render_signals(signals, history_week_ago(history, now.date()))
+    history = update_history(history, signals, now.date())
+    with open(os.path.join(HERE, 'history.json'), 'w', encoding='utf-8') as f:
+        json.dump(history, f, ensure_ascii=False, indent=1)
 
     meta_tr = ''
     for r in sorted(meta_rows, key=lambda r: -r['gasto']):
@@ -513,6 +727,7 @@ def main():
         avg_cpl_label=money(avg_cpl),
         dealer_rows=dealer_tr,
         channel_rows=channel_tr,
+        signals_html=signals_html,
     )
 
     out_path = os.path.join(HERE, 'output.html')
@@ -602,6 +817,23 @@ TEMPLATE = r"""<!doctype html>
   .goal-sub {{ font-size: 0.8em; color: var(--color-fg-muted); }}
   .alert-empty {{ color: var(--color-fg-muted); font-size: 0.9em; font-style: italic; }}
 
+  .signals {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(17em, 1fr)); gap: 14px; }}
+  .sig-card {{ background: var(--color-panel); border: 1px solid var(--color-border-line); border-left-width: 4px; border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 6px; }}
+  .sig-card.ok {{ border-left-color: var(--color-ok); }}
+  .sig-card.warn {{ border-left-color: var(--color-warn); }}
+  .sig-card.bad {{ border-left-color: var(--color-bad); }}
+  .sig-card.nodata, .sig-card.nometa {{ border-left-color: var(--color-border-line); border-left-style: dashed; }}
+  .sig-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }}
+  .sig-title {{ font-size: 0.85em; font-weight: 600; }}
+  .sig-value {{ font-family: var(--font-serif); font-size: 2.2em; line-height: 1.1; font-variant-numeric: tabular-nums; }}
+  .sig-unit {{ font-family: var(--font-sans); font-size: 0.4em; color: var(--color-fg-muted); }}
+  .sig-detail {{ font-size: 0.85em; }}
+  .sig-delta {{ font-size: 0.8em; color: var(--color-fg-muted); font-variant-numeric: tabular-nums; }}
+  .sig-delta.good {{ color: var(--color-ok); }}
+  .sig-delta.bad {{ color: var(--color-bad); }}
+  .sig-context {{ font-size: 0.78em; color: var(--color-fg-muted); border-top: 1px solid var(--color-border-line); padding-top: 6px; margin-top: 2px; }}
+  .badge.nodata, .badge.nometa {{ background: transparent; color: var(--color-fg-muted); border: 1px dashed var(--color-fg-muted); }}
+
   footer {{ margin-top: 40px; color: var(--color-fg-muted); font-size: 0.78em; }}
   @media (max-width: 640px) {{
     .hbar-row {{ grid-template-columns: 8em 1fr 5.5em; }}
@@ -623,6 +855,11 @@ TEMPLATE = r"""<!doctype html>
     <p class="note">Datos actualizados: <b>{updated_at}</b></p>
     {google_warning_html}
   </header>
+
+  <section id="senales">
+    <h2>Cómo viene la cuenta</h2>
+    <div class="signals">{signals_html}</div>
+  </section>
 
   <section class="kpis" id="resumen">
     <div class="kpi-card">
@@ -741,6 +978,7 @@ TEMPLATE = r"""<!doctype html>
   <details class="methodology">
     <summary>Cómo se construye este pulso</summary>
     <ul>
+      <li>Señales de cuenta: (1) proyección de leads a fin de mes ÷ objetivo, del Excel de Lu — verde desde 100%, amarillo entre 80% y 100%, rojo debajo de 80%; el contexto cuenta los concesionarios con objetivo que proyectan menos del 60% de su meta. (2) Costo por lead de la pauta del mes (fila "Total Paid" de la pestaña Resumen de Lu) contra el mes anterior — verde si es igual o más barato, amarillo hasta 15% más caro, rojo si sube más. (3) Gasto real Meta + Google proyectado a fin de mes contra el presupuesto del mes — verde entre 90% y 105%, amarillo entre 80% y 115%, rojo fuera de eso; sin presupuesto cargado muestra "Sin dato". La comparación "hace una semana" usa el valor guardado 7 días antes dentro del mismo mes.</li>
       <li>Meta Ads y Google Ads: gasto y resultados reales desde el día 1 del mes en curso hasta hoy. Esta página se regenera una vez por día (no en vivo, a diferencia de la versión que vive en Claude).</li>
       <li>Excel de Lu: fila TOTAL y detalle por concesionario de la hoja "INV x CONCE Proyección". Si Lu arma una pestaña nueva para el próximo mes con otro nombre, hay que avisarle a Claude para actualizar el rango.</li>
       <li>Campaña 1 (Prioritarios) y Campaña 2 (Genérica BYD + no prioritarios) son un trabajo aparte que se le hace directamente a la terminal BYD, no a los concesionarios Brum. Se excluyen por completo de este tablero — de la tabla de Meta Ads, de la inversión total y de cualquier cruce — porque nunca van a aparecer en el Excel de Lu (corregido 20/11 por aclaración directa de Agos).</li>
