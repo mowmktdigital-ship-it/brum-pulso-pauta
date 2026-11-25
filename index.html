@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulso de Pauta BRUM</title>
+<style>
+  :root {
+    --color-fg: #1a1a18; --color-fg-muted: #6b6b63; --color-bg: #ffffff; --color-panel: #f7f7f3;
+    --color-border-line: #e6e4dd; --color-ok: #2f7a3c; --color-warn: #b5750f; --color-bad: #b93c3c;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --font-serif: Georgia, "Times New Roman", serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --color-fg: #ece9e2; --color-fg-muted: #9c9a92; --color-bg: #15140f; --color-panel: #1d1c16;
+      --color-border-line: #332f23; --color-ok: #6fc37c; --color-warn: #e2a640; --color-bad: #e2726a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --color-fg: #ece9e2; --color-fg-muted: #9c9a92; --color-bg: #15140f; --color-panel: #1d1c16;
+    --color-border-line: #332f23; --color-ok: #6fc37c; --color-warn: #e2a640; --color-bad: #e2726a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--color-bg); color: var(--color-fg); font-family: var(--font-sans); }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1, h2 { font-family: var(--font-serif); font-weight: 400; }
+  .eyebrow { font-size: 0.75em; letter-spacing: 1.5px; text-transform: uppercase; color: var(--color-fg-muted); margin: 0 0 6px; }
+  h1 { font-size: 1.9em; margin: 0 0 10px; }
+  .lead { font-size: 1.15em; margin: 0 0 8px; }
+  .note { color: var(--color-fg-muted); font-size: 0.85em; margin: 4px 0; max-width: 60em; }
+  .note.warn-note { color: var(--color-warn); }
+  header { margin-bottom: 32px; }
+  section { margin-bottom: 36px; }
+  h2 { font-size: 1.3em; margin: 0 0 8px; }
+  .section-note { color: var(--color-fg-muted); font-size: 0.9em; margin: 0 0 14px; max-width: 60em; }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(13em, 1fr)); gap: 14px; }
+  .kpi-card { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 4px; }
+  .kpi-card .kpi-label { font-size: 0.8em; color: var(--color-fg-muted); }
+  .kpi-card .kpi-value { font-family: var(--font-serif); font-size: 1.9em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .kpi-card .kpi-sub { font-size: 0.8em; color: var(--color-fg-muted); }
+  .kpi-card.bad .kpi-value { color: var(--color-bad); }
+
+  .dash-table-wrap { overflow-x: auto; }
+  table.pulso-table { width: 100%; border-collapse: collapse; font-size: 0.9em; font-variant-numeric: tabular-nums; }
+  table.pulso-table th, table.pulso-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--color-border-line); white-space: nowrap; }
+  table.pulso-table th { color: var(--color-fg-muted); font-weight: 600; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.5px; }
+  table.pulso-table td.num, table.pulso-table th.num { text-align: right; }
+  table.pulso-table td.wrap, table.pulso-table th.wrap { white-space: normal; max-width: 28em; }
+
+  .badge { display: inline-block; padding: 0.15em 0.6em; border-radius: 999px; font-size: 0.78em; font-weight: 600; }
+  .badge.ok { background: color-mix(in srgb, var(--color-ok) 18%, transparent); color: var(--color-ok); }
+  .badge.warn { background: color-mix(in srgb, var(--color-warn) 18%, transparent); color: var(--color-warn); }
+  .badge.bad { background: color-mix(in srgb, var(--color-bad) 18%, transparent); color: var(--color-bad); }
+
+  .hbar-row { display: grid; grid-template-columns: 16em 1fr 7em; gap: 10px; align-items: center; margin-bottom: 8px; font-size: 0.85em; }
+  .hbar-label { color: var(--color-fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hbar-value { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar-track { position: relative; height: 10px; border-radius: 999px; background: var(--color-border-line); overflow: visible; }
+  .bar-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 999px; }
+  .chart-box { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  .chart-box .avg-label { font-size: 0.75em; color: var(--color-fg-muted); margin-top: 6px; }
+
+  details.methodology { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: 10px; padding: 16px; }
+  details.methodology summary { cursor: pointer; font-weight: 600; }
+  details.methodology ul { margin: 10px 0 0; padding-left: 1.2em; }
+  details.methodology li { margin-bottom: 6px; color: var(--color-fg-muted); font-size: 0.9em; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 10px; font-size: 0.8em; color: var(--color-fg-muted); align-items: baseline; }
+  .legend .legend-item { display: inline-flex; align-items: baseline; gap: 6px; }
+
+  .goal-card { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .goal-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 0.9em; gap: 14px; flex-wrap: wrap; }
+  .goal-value { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .goal-bar-track { position: relative; height: 10px; border-radius: 999px; background: var(--color-border-line); overflow: visible; }
+  .goal-bar-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 999px; background: var(--color-ok); }
+  .goal-bar-proj { position: absolute; top: -3px; width: 2px; height: 16px; background: var(--color-fg-muted); }
+  .goal-sub { font-size: 0.8em; color: var(--color-fg-muted); }
+  .alert-empty { color: var(--color-fg-muted); font-size: 0.9em; font-style: italic; }
+
+  footer { margin-top: 40px; color: var(--color-fg-muted); font-size: 0.78em; }
+  @media (max-width: 640px) {
+    .hbar-row { grid-template-columns: 8em 1fr 5.5em; }
+    table.pulso-table th, table.pulso-table td { padding: 6px 7px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">BRUM — Pauta · Pulso (snapshot diario)</p>
+    <h1>Pulso de Pauta</h1>
+    <p class="lead">El gasto real de plataforma es $826.339 mayor que lo que el Excel de Lu tiene cargado.</p>
+    <p class="note">
+      Mes en curso: <b>01/11 al 25/11/2026</b> (día 25 de 30).
+      Esta página se regenera automáticamente una vez por día con datos de Meta Ads, Google Ads y el Excel de Lu.
+      El diagnóstico narrativo, las recomendaciones y el seguimiento de pedidos siguen exclusivamente en el PDF semanal.
+    </p>
+    <p class="note">Datos actualizados: <b>25/11/2026 12:24</b></p>
+    <p class="note warn-note">⚠️ Google Ads: mostrando el último dato disponible del 2026-11-20. En cuanto se pueda volver a consultar, se actualiza solo.</p>
+  </header>
+
+  <section class="kpis" id="resumen">
+    <div class="kpi-card">
+      <span class="kpi-label">Gasto Meta Ads</span>
+      <span class="kpi-value">$7.733.865</span>
+      <span class="kpi-sub">Campañas activas, mes en curso</span>
+    </div>
+    <div class="kpi-card">
+      <span class="kpi-label">Gasto Google Ads</span>
+      <span class="kpi-value">$1.257.040</span>
+      <span class="kpi-sub">Campañas Search, mes en curso</span>
+    </div>
+    <div class="kpi-card">
+      <span class="kpi-label">Gasto real total</span>
+      <span class="kpi-value">$8.990.905</span>
+      <span class="kpi-sub">Meta + Google, plataforma</span>
+    </div>
+    <div class="kpi-card bad">
+      <span class="kpi-label">Gap vs. Excel de Lu</span>
+      <span class="kpi-value">$826.339</span>
+      <span class="kpi-sub">9,2% del gasto real</span>
+    </div>
+  </section>
+
+  <section id="objetivo">
+    <h2>Avance hacia el objetivo del mes</h2>
+    <div class="goal-card">
+      <div class="goal-row">
+        <span>Leads reales: <span class="goal-value">1.024</span> de <span class="goal-value">1.435</span> (71,4%)</span>
+        <span class="goal-sub">Proyección a fin de mes: <span class="goal-value">1.280</span> (89,2% del objetivo)</span>
+      </div>
+      <div class="goal-bar-track">
+        <div class="goal-bar-fill" style="width:71.4%"></div>
+        <div class="goal-bar-proj" style="left:89.2%"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="alertas">
+    <h2>Campañas con gasto y cero resultados</h2>
+    <p class="section-note">Campañas activas que gastaron en el periodo pero no sumaron ningún resultado ni conversión. Es un hecho, no un diagnóstico de causa.</p>
+    <div class="dash-table-wrap">
+      <table class="pulso-table">
+        <thead><tr><th>Plataforma</th><th>Campaña</th><th class="num">Gasto</th></tr></thead>
+        <tbody><tr><td colspan="3" class="alert-empty">Ninguna campaña activa gastó sin generar resultados. 👍</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="meta">
+    <h2>Meta Ads por campaña</h2>
+    <p class="section-note">Gasto y costo por resultado de cada campaña activa, mes en curso. El tipo de resultado varía según el objetivo de la campaña.</p>
+    <div class="dash-table-wrap">
+      <table class="pulso-table">
+        <thead><tr><th>Campaña</th><th>Estado</th><th class="num">Gasto</th><th>Resultado</th><th class="num">Cantidad</th><th class="num">Costo / resultado</th></tr></thead>
+        <tbody><tr><td>Meta Formulario Por Marca</td><td>Activa</td><td class="num">$7.001.767</td><td>Leads</td><td class="num">826</td><td class="num">$8.477</td></tr><tr><td>Campaña 3 — Escala Seal 5</td><td>Activa</td><td class="num">$340.239</td><td>Leads</td><td class="num">139</td><td class="num">$2.448</td></tr><tr><td>Campañas Filtrado de Leads</td><td>Activa</td><td class="num">$217.326</td><td>Conversaciones iniciadas</td><td class="num">52</td><td class="num">$4.179</td></tr><tr><td>Remarketing</td><td>Activa</td><td class="num">$83.189</td><td>Leads</td><td class="num">8</td><td class="num">$10.399</td></tr><tr><td>Oportunidades en el sitio web</td><td>Activa</td><td class="num">$53.087</td><td>Otro resultado</td><td class="num">41</td><td class="num">$1.295</td></tr><tr><td>Organicas - Tráfico IG Perfil | Test</td><td>Activa</td><td class="num">$38.257</td><td>Visitas de perfil</td><td class="num">316</td><td class="num">$121</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="google">
+    <h2>Google Ads por campaña</h2>
+    <p class="section-note">Campañas Search activas de la cuenta, mes en curso.</p>
+    <div class="dash-table-wrap">
+      <table class="pulso-table">
+        <thead><tr><th>Campaña</th><th class="num">Gasto</th><th class="num">Conversiones</th><th class="num">CPA</th></tr></thead>
+        <tbody><tr><td>Search Generico</td><td class="num">$615.721</td><td class="num">12,35</td><td class="num">$49.856</td></tr><tr><td>Search Marcas</td><td class="num">$405.696</td><td class="num">15,51</td><td class="num">$26.157</td></tr><tr><td>Competencias</td><td class="num">$94.122</td><td class="num">3,00</td><td class="num">$31.374</td></tr><tr><td>Search BYD</td><td class="num">$79.987</td><td class="num">1,00</td><td class="num">$79.987</td></tr><tr><td>Search Brum</td><td class="num">$61.514</td><td class="num">11,00</td><td class="num">$5.592</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="cruce">
+    <h2>Cruce con el Excel de Lu</h2>
+    <p class="section-note">Gasto real de plataforma: $8.990.905 · Excel de Lu: $8.164.566 · Diferencia: $826.339 (9,2% del gasto real)</p>
+    <div class="chart-box"><div class="hbar-row"><span class="hbar-label">Meta Oportunidades (Leads + concesionario) no cargado</span><div class="bar-track"><div class="bar-fill" style="width:11.3%;background:var(--color-ok)"></div></div><span class="hbar-value">$-48.820</span></div><div class="hbar-row"><span class="hbar-label">Campañas de tráfico/engagement sin bucket en el Excel</span><div class="bar-track"><div class="bar-fill" style="width:19.3%;background:var(--color-bad)"></div></div><span class="hbar-value">$83.189</span></div><div class="hbar-row"><span class="hbar-label">Meta Formulario — desfasaje de carga</span><div class="bar-track"><div class="bar-fill" style="width:83.9%;background:var(--color-bad)"></div></div><span class="hbar-value">$362.267</span></div><div class="hbar-row"><span class="hbar-label">Google Ads — el Excel usa un CPL fijo</span><div class="bar-track"><div class="bar-fill" style="width:2.9%;background:var(--color-ok)"></div></div><span class="hbar-value">$-12.392</span></div><div class="hbar-row"><span class="hbar-label">Filtrado de Leads/WhatsApp — desfasaje menor</span><div class="bar-track"><div class="bar-fill" style="width:2.4%;background:var(--color-bad)"></div></div><span class="hbar-value">$10.513</span></div><div class="hbar-row"><span class="hbar-label">Campañas Meta sin clasificar</span><div class="bar-track"><div class="bar-fill" style="width:100.0%;background:var(--color-bad)"></div></div><span class="hbar-value">$431.583</span></div></div>
+    <div class="dash-table-wrap">
+      <table class="pulso-table">
+        <thead><tr><th class="wrap">Componente del gap</th><th class="num">Monto</th><th class="num">% del gap</th><th class="wrap">Explicación</th></tr></thead>
+        <tbody><tr><td class="wrap">Meta Oportunidades (Leads + concesionario) no cargado</td><td class="num">$-48.820</td><td class="num">-5,9%</td><td class="wrap">Campanas "Leads + nombre del concesionario" (la categoria real de Oportunidades). Hoy estan todas pausadas en Meta, asi que el gasto de plataforma en esta categoria es minimo o nulo - coherente con lo que carga el Excel. Si se reactivan, esta fila va a mostrar gasto real de nuevo.</td></tr><tr><td class="wrap">Campañas de tráfico/engagement sin bucket en el Excel</td><td class="num">$83.189</td><td class="num">10,1%</td><td class="wrap">Trafico al Sitio + Organicas IG + Remarketing no estan pensadas para generar leads trackeables asi que el Excel no les asigna bucket. Esperable - no es un error.</td></tr><tr><td class="wrap">Meta Formulario — desfasaje de carga</td><td class="num">$362.267</td><td class="num">43,8%</td><td class="wrap">El Excel va levemente atras del gasto real de Meta Formulario Por Marca (lag normal de uno o dos dias de carga).</td></tr><tr><td class="wrap">Google Ads — el Excel usa un CPL fijo</td><td class="num">$-12.392</td><td class="num">-1,5%</td><td class="wrap">El Excel calcula la inversion de Google como leads reales multiplicados por un CPL fijo en vez de usar el gasto real de la plataforma. Es un artefacto de esa formula - no una medicion real de desfasaje.</td></tr><tr><td class="wrap">Filtrado de Leads/WhatsApp — desfasaje menor</td><td class="num">$10.513</td><td class="num">1,3%</td><td class="wrap">Mismo lag de carga que Meta Formulario - montos chicos.</td></tr><tr><td class="wrap">Campañas Meta sin clasificar</td><td class="num">$431.583</td><td class="num">52,2%</td><td class="wrap">Campana nueva, renombrada o pausada que este tablero todavia no clasifica en ningun bucket. Avisar para mapearla.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="canales">
+    <h2>Leads por canal: CPL promedio y conversión a venta</h2>
+    <p class="section-note">Leads reales, inversión, costo por lead y tasa de conversión a venta de cada canal, según el Excel de Lu (fila TOTAL), mes en curso. Los canales orgánicos no tienen gasto de pauta asociado, por eso no muestran CPL. No incluye Campaña 1/2 (BYD), que son un negocio aparte y no están en este Excel.</p>
+    <div class="dash-table-wrap">
+      <table class="pulso-table">
+        <thead><tr><th>Canal</th><th class="num">Leads</th><th class="num">Inversión</th><th class="num">CPL</th><th class="num">Ventas</th><th class="num">Tasa de conv. a venta</th></tr></thead>
+        <tbody><tr><td>Google Ads (pauta)</td><td class="num">59</td><td class="num">$1.269.432</td><td class="num">$21.516</td><td class="num">1</td><td class="num">1,69%</td></tr><tr><td>Meta Oportunidades</td><td class="num">26</td><td class="num">$48.820</td><td class="num">$1.878</td><td class="num">0</td><td class="num">0,00%</td></tr><tr><td>Meta Formulario</td><td class="num">789</td><td class="num">$6.639.500</td><td class="num">$8.415</td><td class="num">1</td><td class="num">0,00%</td></tr><tr><td>Filtrado de Leads / WhatsApp</td><td class="num">25</td><td class="num">$206.814</td><td class="num">$8.273</td><td class="num">0</td><td class="num">0,00%</td></tr><tr><td>Orgánico Google</td><td class="num">40</td><td class="num">—</td><td class="num">—</td><td class="num">0</td><td class="num">0,00%</td></tr><tr><td>Orgánico Redes</td><td class="num">41</td><td class="num">—</td><td class="num">—</td><td class="num">0</td><td class="num">0,00%</td></tr><tr><td>Otros orígenes</td><td class="num">44</td><td class="num">—</td><td class="num">—</td><td class="num">13</td><td class="num">29,55%</td></tr><tr style="font-weight:600"><td>TOTAL (incluye orgánicos)</td><td class="num">1.024</td><td class="num">$8.164.566</td><td class="num">$7.973</td><td class="num">15</td><td class="num">1,46%</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="dealers">
+    <h2>CPL por concesionario vs. promedio de cuenta</h2>
+    <p class="section-note">Top 10 marcas por inversión en el Excel, mes en curso. El promedio de cuenta surge de dividir la inversión total pauta por los leads reales totales del mes (incluye leads orgánicos, que diluyen el promedio).</p>
+    <div class="chart-box">
+      <div class="hbar-row"><span class="hbar-label">Beta Automotores</span><div class="bar-track"><div class="bar-fill" style="width:28.6%;background:var(--color-ok)"></div></div><span class="hbar-value">$7.411</span></div><div class="hbar-row"><span class="hbar-label">GWM AutoSmart</span><div class="bar-track"><div class="bar-fill" style="width:50.7%;background:var(--color-warn)"></div></div><span class="hbar-value">$13.121</span></div><div class="hbar-row"><span class="hbar-label">Chery SVA</span><div class="bar-track"><div class="bar-fill" style="width:38.3%;background:var(--color-warn)"></div></div><span class="hbar-value">$9.930</span></div><div class="hbar-row"><span class="hbar-label">Autogen</span><div class="bar-track"><div class="bar-fill" style="width:37.9%;background:var(--color-warn)"></div></div><span class="hbar-value">$9.807</span></div><div class="hbar-row"><span class="hbar-label">Gac Nave Motors</span><div class="bar-track"><div class="bar-fill" style="width:100.0%;background:var(--color-bad)"></div></div><span class="hbar-value">$25.899</span></div><div class="hbar-row"><span class="hbar-label">Grupo SVA</span><div class="bar-track"><div class="bar-fill" style="width:25.7%;background:var(--color-ok)"></div></div><span class="hbar-value">$6.648</span></div><div class="hbar-row"><span class="hbar-label">Baic SVA</span><div class="bar-track"><div class="bar-fill" style="width:42.5%;background:var(--color-warn)"></div></div><span class="hbar-value">$11.014</span></div><div class="hbar-row"><span class="hbar-label">Grupo SVA Citroen</span><div class="bar-track"><div class="bar-fill" style="width:29.0%;background:var(--color-ok)"></div></div><span class="hbar-value">$7.513</span></div><div class="hbar-row"><span class="hbar-label">Renault Lumiere</span><div class="bar-track"><div class="bar-fill" style="width:36.3%;background:var(--color-warn)"></div></div><span class="hbar-value">$9.392</span></div><div class="hbar-row"><span class="hbar-label">Baic Robayna</span><div class="bar-track"><div class="bar-fill" style="width:47.2%;background:var(--color-warn)"></div></div><span class="hbar-value">$12.218</span></div>
+      <div class="avg-label">Línea de promedio de cuenta: $7.973</div>
+    </div>
+    <div class="dash-table-wrap">
+      <table class="pulso-table">
+        <thead><tr><th>Marca</th><th class="num">Inversión</th><th class="num">% del total</th><th class="num">CPL</th><th class="num">vs. promedio</th><th class="num">Ventas</th><th>Estado</th></tr></thead>
+        <tbody><tr><td>Beta Automotores</td><td class="num">$1.133.918</td><td class="num">13,9%</td><td class="num">$7.411</td><td class="num">0,93x</td><td class="num">1</td><td><span class="badge ok">OK</span></td></tr><tr><td>GWM AutoSmart</td><td class="num">$826.599</td><td class="num">10,1%</td><td class="num">$13.121</td><td class="num">1,65x</td><td class="num">0</td><td><span class="badge warn">Revisar</span></td></tr><tr><td>Chery SVA</td><td class="num">$724.898</td><td class="num">8,9%</td><td class="num">$9.930</td><td class="num">1,25x</td><td class="num">1</td><td><span class="badge warn">A vigilar</span></td></tr><tr><td>Autogen</td><td class="num">$627.660</td><td class="num">7,7%</td><td class="num">$9.807</td><td class="num">1,23x</td><td class="num">1</td><td><span class="badge warn">A vigilar</span></td></tr><tr><td>Gac Nave Motors</td><td class="num">$543.874</td><td class="num">6,7%</td><td class="num">$25.899</td><td class="num">3,25x</td><td class="num">0</td><td><span class="badge bad">Revisar prioritario</span></td></tr><tr><td>Grupo SVA</td><td class="num">$385.571</td><td class="num">4,7%</td><td class="num">$6.648</td><td class="num">0,83x</td><td class="num">0</td><td><span class="badge ok">OK</span></td></tr><tr><td>Baic SVA</td><td class="num">$341.434</td><td class="num">4,2%</td><td class="num">$11.014</td><td class="num">1,38x</td><td class="num">0</td><td><span class="badge warn">Revisar</span></td></tr><tr><td>Grupo SVA Citroen</td><td class="num">$308.028</td><td class="num">3,8%</td><td class="num">$7.513</td><td class="num">0,94x</td><td class="num">1</td><td><span class="badge ok">OK</span></td></tr><tr><td>Renault Lumiere</td><td class="num">$291.152</td><td class="num">3,6%</td><td class="num">$9.392</td><td class="num">1,18x</td><td class="num">0</td><td><span class="badge warn">A vigilar</span></td></tr><tr><td>Baic Robayna</td><td class="num">$256.568</td><td class="num">3,1%</td><td class="num">$12.218</td><td class="num">1,53x</td><td class="num">2</td><td><span class="badge warn">Revisar</span></td></tr></tbody>
+      </table>
+    </div>
+    <div class="legend">
+      <span class="legend-item"><span class="badge ok">OK</span> CPL igual o por debajo del promedio de cuenta (1x o menos)</span>
+      <span class="legend-item"><span class="badge warn">A vigilar</span> Entre 1x y 1,3x el promedio</span>
+      <span class="legend-item"><span class="badge warn">Revisar</span> Entre 1,3x y 2x el promedio</span>
+      <span class="legend-item"><span class="badge bad">Revisar prioritario</span> Más de 2x el promedio</span>
+    </div>
+  </section>
+
+  <details class="methodology">
+    <summary>Cómo se construye este pulso</summary>
+    <ul>
+      <li>Meta Ads y Google Ads: gasto y resultados reales desde el día 1 del mes en curso hasta hoy. Esta página se regenera una vez por día (no en vivo, a diferencia de la versión que vive en Claude).</li>
+      <li>Excel de Lu: fila TOTAL y detalle por concesionario de la hoja "INV x CONCE Proyección". Si Lu arma una pestaña nueva para el próximo mes con otro nombre, hay que avisarle a Claude para actualizar el rango.</li>
+      <li>Campaña 1 (Prioritarios) y Campaña 2 (Genérica BYD + no prioritarios) son un trabajo aparte que se le hace directamente a la terminal BYD, no a los concesionarios Brum. Se excluyen por completo de este tablero — de la tabla de Meta Ads, de la inversión total y de cualquier cruce — porque nunca van a aparecer en el Excel de Lu (corregido 20/11 por aclaración directa de Agos).</li>
+      <li>El gap se reparte en varios componentes con la misma metodología del informe semanal. Meta Oportunidades = campañas "Leads + nombre del concesionario" (corregido el 18/11 por aclaración directa de Lu). Las demás campañas de Meta se mapean por su nombre exacto a un bucket; si Meta cambia o agrega campañas, puede aparecer una fila "Campañas Meta sin clasificar": es la señal de que hay que revisar el mapeo.</li>
+      <li>El CPL por concesionario usa inversión reportada en el Excel ÷ leads reales reportados en el Excel, igual que en el informe semanal. El semáforo es puramente por CPL vs. promedio: más de 2x es "Revisar prioritario", entre 1,3x y 2x es "Revisar", entre 1x y 1,3x es "A vigilar", 1x o menos es "OK".</li>
+      <li>Leads por canal: toma directamente las columnas que el Excel de Lu ya calcula por canal (Google Pauta, Meta Oportunidades, Meta Formulario, Filtrado de Leads/WhatsApp, y los dos orgánicos). El CPL de cada canal es inversión ÷ leads reales de ese canal; la tasa de conversión a venta es ventas ÷ leads reales de ese canal, tal cual las carga Lu. La fila TOTAL incluye los leads orgánicos, que diluyen el CPL y la tasa de conversión promedio de cuenta.</li>
+      <li>El avance hacia el objetivo del mes y la proyección a fin de mes usan las columnas que el propio Excel de Lu ya calcula (objetivo, reales y proyectados a fin de mes).</li>
+      <li>La alerta de campañas con gasto y cero resultados es un hecho objetivo (gasto &gt; 0 y resultado = 0), sin interpretar la causa.</li>
+      <li>Esta vista es solo números: diagnóstico, recomendaciones y seguimiento de pedidos siguen en el PDF semanal, no acá.</li>
+    </ul>
+  </details>
+
+  <footer>Pulso de Pauta BRUM · snapshot generado automáticamente por MOW Digital · no requiere inicio de sesión</footer>
+</div>
+</body>
+</html>
