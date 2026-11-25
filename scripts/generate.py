@@ -194,13 +194,15 @@ def calc_account_summary(excel_rows, meta_rows, google_rows, now):
 EXCLUDED_CAMPAIGN_NAMES = ['Campaña 1 — Prioritarios', 'Campaña 2 — Genérica BYD + no prioritarios',
                            'Campaña 3 — Escala Seal 5']
 FORMULARIO_NAMES = ['Meta Formulario Por Marca']
-TRAFICO_NAMES = ['Tráfico al Sitio', 'Orgánicas - Tráfico IG Perfil | Test', 'Remarketing']
+TRAFICO_NAMES = ['Tráfico al Sitio', 'Orgánicas - Tráfico IG Perfil | Test', 'Organicas - Tráfico IG Perfil | Test', 'Remarketing']
 FILTRADO_NAMES = ['Campañas Filtrado de Leads']
 
 
 def _es_oportunidades_real(nombre):
     # Campanas "Leads <concesionario>" = la categoria real de Meta Oportunidades del Excel.
-    return nombre.strip().lower().startswith('leads ')
+    # 25/11 (Agos): "Oportunidades en el sitio web" tambien cuenta como Meta Oportunidades.
+    n = nombre.strip().lower()
+    return n.startswith('leads ') or n.startswith('oportunidades')
 
 
 def calc_excel_gap(excel_rows, meta_rows, google_rows):
@@ -225,7 +227,7 @@ def calc_excel_gap(excel_rows, meta_rows, google_rows):
 
     comps = [
         {'componente': 'Meta Oportunidades (Leads + concesionario) no cargado', 'monto': b_op - (total.get('meta_op_inv') or 0),
-         'explicacion': 'Campanas "Leads + nombre del concesionario" (la categoria real de Oportunidades). Hoy estan todas pausadas en Meta, asi que el gasto de plataforma en esta categoria es minimo o nulo - coherente con lo que carga el Excel. Si se reactivan, esta fila va a mostrar gasto real de nuevo.'},
+         'explicacion': 'Campanas "Leads + nombre del concesionario" y "Oportunidades en el sitio web" (la categoria de Oportunidades del Excel), contra lo que el Excel tiene cargado como inversion de Oportunidades.'},
         {'componente': 'Campañas de tráfico/engagement sin bucket en el Excel', 'monto': b_traf,
          'explicacion': 'Trafico al Sitio + Organicas IG + Remarketing no estan pensadas para generar leads trackeables asi que el Excel no les asigna bucket. Esperable - no es un error.'},
         {'componente': 'Meta Formulario — desfasaje de carga', 'monto': b_form - (total.get('meta_form_inv') or 0),
@@ -1041,7 +1043,7 @@ TEMPLATE = r"""<!doctype html>
       <li>Meta Ads y Google Ads: gasto y resultados reales desde el día 1 del mes en curso hasta hoy. Esta página se regenera una vez por día (no en vivo, a diferencia de la versión que vive en Claude).</li>
       <li>Excel de Lu: fila TOTAL y detalle por concesionario de la hoja "INV x CONCE Proyección". Si Lu arma una pestaña nueva para el próximo mes con otro nombre, hay que avisarle a Claude para actualizar el rango.</li>
       <li>Campaña 1 (Prioritarios), Campaña 2 (Genérica BYD + no prioritarios) y Campaña 3 (Escala Seal 5, sumada el 25/11) son un trabajo aparte que se le hace directamente a la terminal BYD, no a los concesionarios Brum. Se excluyen por completo de este tablero — de la tabla de Meta Ads, de la inversión total y de cualquier cruce — porque nunca van a aparecer en el Excel de Lu (corregido 20/11 por aclaración directa de Agos).</li>
-      <li>El gap se reparte en varios componentes con la misma metodología del informe semanal. Meta Oportunidades = campañas "Leads + nombre del concesionario" (corregido el 18/11 por aclaración directa de Lu). Las demás campañas de Meta se mapean por su nombre exacto a un bucket; si Meta cambia o agrega campañas, puede aparecer una fila "Campañas Meta sin clasificar": es la señal de que hay que revisar el mapeo.</li>
+      <li>El gap se reparte en varios componentes con la misma metodología del informe semanal. Meta Oportunidades = campañas "Leads + nombre del concesionario" (corregido el 18/11 por aclaración directa de Lu) y "Oportunidades en el sitio web" (sumada el 25/11). Las demás campañas de Meta se mapean por su nombre exacto a un bucket; si Meta cambia o agrega campañas, puede aparecer una fila "Campañas Meta sin clasificar": es la señal de que hay que revisar el mapeo.</li>
       <li>El CPL por concesionario usa inversión reportada en el Excel ÷ leads reales reportados en el Excel, igual que en el informe semanal. El semáforo es puramente por CPL vs. promedio: más de 2x es "Revisar prioritario", entre 1,3x y 2x es "Revisar", entre 1x y 1,3x es "A vigilar", 1x o menos es "OK".</li>
       <li>Leads por canal: toma directamente las columnas que el Excel de Lu ya calcula por canal (Google Pauta, Meta Oportunidades, Meta Formulario, Filtrado de Leads/WhatsApp, y los dos orgánicos). El CPL de cada canal es inversión ÷ leads reales de ese canal; la tasa de conversión a venta es ventas ÷ leads reales de ese canal, tal cual las carga Lu. La fila TOTAL incluye los leads orgánicos, que diluyen el CPL y la tasa de conversión promedio de cuenta.</li>
       <li>El avance hacia el objetivo del mes y la proyección a fin de mes usan las columnas que el propio Excel de Lu ya calcula (objetivo, reales y proyectados a fin de mes).</li>
