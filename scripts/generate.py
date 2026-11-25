@@ -658,7 +658,7 @@ def calc_signals(excel_rows, summary, google_raw, resumen_values, presupuesto, n
         except ValueError:
             pass
         gasto_proy = meta_proj + summary['gasto_google'] / g_day * dias
-    pres = (presupuesto or {}).get(now.strftime('%Y-%m'))
+    pres = presupuesto_mes(presupuesto, now, 'total')
     gasto_pct = (gasto_proy / pres * 100) if (gasto_proy is not None and pres) else None
     if gasto_proy is None:
         estado, det = 'nodata', 'Google Ads no disponible hoy: no se puede proyectar el gasto total'
@@ -760,10 +760,108 @@ def render_signals(sig, week_ago):
     return out
 
 
-def update_history(history, sig, today):
+def presupuesto_mes(presupuesto, now, clave):
+    """presupuesto.json admite {"YYYY-MM": monto_total} o {"YYYY-MM": {"total","google","meta"}}."""
+    v = (presupuesto or {}).get(now.strftime('%Y-%m'))
+    if isinstance(v, dict):
+        return v.get(clave)
+    return v if clave == 'total' else None
+
+
+# ---------------------------------------------------------------------------
+# ALERTAS DE ENTREGA (agregado 25/11). Consumo diario de los últimos dos días
+# contra el presupuesto diario de cada plataforma.
+# ---------------------------------------------------------------------------
+ENTREGA_BAJA_PCT = 50.0      # 2 días seguidos con consumo <= 50% del diario => "Consumo bajo"
+ENTREGA_NULA_PCT = 5.0       # 2 días seguidos con consumo <= 5% del diario  => "Sin entrega"
+
+
+def _clasificar_entrega(plataforma, dias, diario_pres):
+    """dias: lista [(fecha_iso, gasto)] de los dos últimos días completos, en orden."""
+    if len(dias) < 2:
+        return None, None
+    txt_dias = ' · '.join('{} {}'.format(d[8:10] + '/' + d[5:7], money(g)) for d, g in dias)
+    if not diario_pres:
+        return None, '{}: {} (sin presupuesto diario para comparar)'.format(plataforma, txt_dias)
+    pcts = [g / diario_pres * 100 for _, g in dias]
+    linea = '{}: {} · presupuesto diario {} ({})'.format(
+        plataforma, txt_dias, money(diario_pres), ' / '.join(pct(x, 0) for x in pcts))
+    if all(x <= ENTREGA_NULA_PCT for x in pcts):
+        return ('bad', '{} sin entrega: dos días seguidos prácticamente sin gasto ({}). Revisar saldo, pagos, campañas pausadas o anuncios rechazados.'.format(plataforma, txt_dias)), linea
+    if all(x <= ENTREGA_BAJA_PCT for x in pcts):
+        return ('warn', '{}: consumo bajo dos días seguidos ({}), 50% o menos del presupuesto diario de {}.'.format(plataforma, txt_dias, money(diario_pres))), linea
+    return None, linea
+
+
+def calc_entrega(meta_daily_raw, history, google_raw, presupuesto, now, dias_mes):
+    alertas, lineas = [], []
+    hoy = now.date()
+    # Meta: gasto diario por campaña (sin BYD terminal), últimos 2 días completos
+    por_dia = {}
+    for e in meta_daily_raw or []:
+        if e.get('name') in EXCLUDED_CAMPAIGN_NAMES:
+            continue
+        d = e.get('date_start')
+        try:
+            if not d or datetime.date.fromisoformat(d) >= hoy:
+                continue
+        except ValueError:
+            continue
+        por_dia[d] = por_dia.get(d, 0.0) + float((e.get('amount_spent') or {}).get('value') or 0)
+    pres_meta = presupuesto_mes(presupuesto, now, 'meta')
+    diario_meta = (pres_meta / dias_mes) if pres_meta else None
+    if por_dia:
+        ult = sorted(por_dia.items())[-2:]
+        a, l = _clasificar_entrega('Meta', ult, diario_meta)
+        if a:
+            alertas.append(a)
+        if l:
+            lineas.append(l)
+    # Google: diferencias del acumulado entre días consecutivos (history.json)
+    if not google_raw.get('unavailable') and google_raw.get('as_of'):
+        acum = {}
+        for h in history:
+            if h.get('google_as_of') and h.get('google_acum') is not None:
+                acum[h['google_as_of']] = h['google_acum']
+        acum[google_raw['as_of']] = sum(float(c.get('spend') or 0) for c in google_raw.get('by_campaign', []))
+        try:
+            d0 = datetime.date.fromisoformat(google_raw['as_of'])
+        except ValueError:
+            d0 = None
+        pres_g = presupuesto_mes(presupuesto, now, 'google')
+        diario_g = (pres_g / dias_mes) if pres_g else None
+        if d0:
+            ks = [(d0 - datetime.timedelta(days=i)).isoformat() for i in range(3)]
+            if all(k in acum for k in ks) and all(datetime.date.fromisoformat(k).month == d0.month for k in ks):
+                dias = [(ks[1], acum[ks[1]] - acum[ks[2]]), (ks[0], acum[ks[0]] - acum[ks[1]])]
+                a, l = _clasificar_entrega('Google', dias, diario_g)
+                if a:
+                    alertas.append(a)
+                if l:
+                    lineas.append(l)
+            else:
+                lineas.append('Google: hacen falta datos de tres días seguidos del reporte de Looker Studio para medir el consumo diario.')
+    return alertas, lineas
+
+
+def render_entrega(alertas, lineas):
+    if not alertas and not lineas:
+        return ''
+    out = ''
+    for nivel, texto in alertas:
+        out += '<div class="entrega-alerta {n}">⚠️ {t}</div>'.format(n=nivel, t=esc(texto))
+    if lineas:
+        estado = '' if alertas else '<span class="badge ok">Entrega normal</span> '
+        out += '<div class="entrega-lineas">{e}<b>Consumo diario (últimos dos días):</b><br>{l}</div>'.format(
+            e=estado, l='<br>'.join(esc(x) for x in lineas))
+    return '<section id="entrega">' + out + '</section>'
+
+
+def update_history(history, sig, today, extra=None):
     entry = {'fecha': today.isoformat(), 'proy_pct': sig['proy']['valor'],
              'cpl_pauta': sig['cpl']['valor'], 'gasto_proy': sig['gasto']['valor'],
              'extra': sig['extra']['valor'], 'ritmo': sig['ritmo']['valor']}
+    entry.update(extra or {})
     history = [h for h in history if h.get('fecha') != entry['fecha']] + [entry]
     history.sort(key=lambda h: h.get('fecha', ''))
     return history[-120:]
@@ -803,7 +901,14 @@ def main():
     escala_meta = render_escala_meta(load_optional('meta_adsets.json', []))
     historico_html = render_historico(blocks, now)
     signals_html = render_signals(signals, history_week_ago(history, now.date()))
-    history = update_history(history, signals, now.date())
+    entrega_alertas, entrega_lineas = calc_entrega(
+        load_optional('meta_daily.json', []), history, google_raw, presupuesto, now, summary['dias_totales'])
+    entrega_html = render_entrega(entrega_alertas, entrega_lineas)
+    history = update_history(history, signals, now.date(), {
+        'meta_acum': summary['gasto_meta'],
+        'google_acum': None if google_unavailable else summary['gasto_google'],
+        'google_as_of': None if google_unavailable else google_raw.get('as_of'),
+    })
     with open(os.path.join(HERE, 'history.json'), 'w', encoding='utf-8') as f:
         json.dump(history, f, ensure_ascii=False, indent=1)
 
@@ -979,7 +1084,7 @@ def main():
         dealer_rows=dealer_tr,
         channel_rows=channel_tr,
         signals_html=signals_html,
-        cpv_rows=cpv_rows, cpv_mes=cpv_mes, escala_google=escala_google, escala_meta=escala_meta, historico_html=historico_html,
+        entrega_html=entrega_html, cpv_rows=cpv_rows, cpv_mes=cpv_mes, escala_google=escala_google, escala_meta=escala_meta, historico_html=historico_html,
     )
 
     out_path = os.path.join(HERE, 'output.html')
@@ -1095,6 +1200,11 @@ TEMPLATE = r"""<!doctype html>
   .vcol:last-child .vbar {{ background: var(--color-fg); }}
   .vval {{ font-size: 0.68em; font-variant-numeric: tabular-nums; white-space: nowrap; }}
   .vlab {{ font-size: 0.72em; color: var(--color-fg-muted); }}
+  #entrega {{ margin-bottom: 24px; display: flex; flex-direction: column; gap: 8px; }}
+  .entrega-alerta {{ border-radius: 10px; padding: 12px 16px; font-weight: 600; font-size: 0.95em; }}
+  .entrega-alerta.bad {{ background: color-mix(in srgb, var(--color-bad) 15%, transparent); color: var(--color-bad); border: 1px solid var(--color-bad); }}
+  .entrega-alerta.warn {{ background: color-mix(in srgb, var(--color-warn) 15%, transparent); color: var(--color-warn); border: 1px solid var(--color-warn); }}
+  .entrega-lineas {{ font-size: 0.82em; color: var(--color-fg-muted); line-height: 1.6; }}
   h3.sub {{ font-size: 0.85em; font-weight: 600; margin: 18px 0 8px; color: var(--color-fg-muted); text-transform: uppercase; letter-spacing: 0.5px; }}
   .badge.nodata, .badge.nometa {{ background: transparent; color: var(--color-fg-muted); border: 1px dashed var(--color-fg-muted); }}
 
@@ -1119,6 +1229,8 @@ TEMPLATE = r"""<!doctype html>
     <p class="note">Datos actualizados: <b>{updated_at}</b></p>
     {google_warning_html}
   </header>
+
+  {entrega_html}
 
   <section id="senales">
     <h2>Cómo viene la cuenta</h2>
@@ -1280,6 +1392,7 @@ TEMPLATE = r"""<!doctype html>
     <ul>
       <li>Señales de cuenta: (1) proyección de leads a fin de mes ÷ objetivo, del Excel de Lu — verde desde 100%, amarillo entre 80% y 100%, rojo debajo de 80%; el contexto cuenta los concesionarios con objetivo que proyectan menos del 60% de su meta. (2) Costo por lead de la pauta del mes (fila "Total Paid" de la pestaña Resumen de Lu) contra el mes anterior — verde si es igual o más barato, amarillo hasta 15% más caro, rojo si sube más. (3) Gasto real Meta + Google proyectado a fin de mes contra el presupuesto del mes — verde entre 90% y 105%, amarillo entre 80% y 115%, rojo fuera de eso; sin presupuesto cargado muestra "Sin dato". (4) Presupuesto extra estimado: leads que faltan entre la proyección a fin de mes y el objetivo × costo por lead actual de la pauta; se recalcula cada día sobre la proyección, sin esperar al cierre. Es un piso: supone que los leads extra cuestan lo mismo que los actuales. (5) Ritmo diario: leads reales ÷ días transcurridos, contra los leads por día que harían falta en los días restantes (días según el Excel de Lu); toma el mismo color que la señal 1. La comparación "hace una semana" usa el valor guardado 7 días antes dentro del mismo mes.</li>
       <li>¿Dónde rinde más un peso extra? Google: "Margen para escalar" = pierde 10% o más de impresiones por presupuesto y su costo por conversión es igual o menor al promedio de la cuenta; "Limitada, pero cara" = pierde 10% o más por presupuesto pero cuesta más que el promedio; "Estable" = pierde menos de 10%. Dato de impresiones perdidas: planilla puente de Looker Studio. Meta (conjuntos activos de Formulario Por Marca): "Saturándose" = frecuencia del mes de 3 o más; "Costo alto" = costo por lead mayor a 1,3x el promedio de la campaña; "Vigilar frecuencia" = frecuencia entre 2,5 y 3; "Margen para escalar" = costo por lead igual o menor al promedio y frecuencia menor a 2,5; "Estable" = el resto.</li>
+      <li>Alertas de entrega: se compara el gasto de cada uno de los dos últimos días contra el presupuesto diario de la plataforma (presupuesto del mes ÷ días del mes). Si los dos días están en 5% o menos: "sin entrega"; si están en 50% o menos: "consumo bajo". Meta usa el gasto diario por campaña (sin las campañas de BYD terminal); Google usa la diferencia entre los acumulados de reportes de Looker Studio de días consecutivos.</li>
       <li>Costo por venta por canal e histórico: salen de la pestaña Resumen del Excel de Lu (último mes cerrado y los 6 meses cerrados anteriores). El costo por venta se recalcula siempre como inversión ÷ ventas, sin usar la columna del Excel, para que todos los meses se calculen igual.</li>
       <li>Meta Ads y Google Ads: gasto y resultados reales desde el día 1 del mes en curso hasta hoy. Esta página se regenera una vez por día (no en vivo, a diferencia de la versión que vive en Claude).</li>
       <li>Excel de Lu: fila TOTAL y detalle por concesionario de la hoja "INV x CONCE Proyección". Si Lu arma una pestaña nueva para el próximo mes con otro nombre, hay que avisarle a Claude para actualizar el rango.</li>
