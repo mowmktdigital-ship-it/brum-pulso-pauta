@@ -75,6 +75,7 @@ def build_google_rows(raw):
         spend = float(c.get('spend') or 0)
         rows.append({
             'campana': c['name'], 'gasto': spend, 'conversiones': conv,
+            'perdido_presupuesto': c.get('lost_budget_pct'),
             'cpa': (spend / conv) if conv > 0 else None,
         })
     return rows
@@ -479,6 +480,97 @@ def render_historico(blocks, now, n=6):
     return '<div class="minis">' + out + '</div>'
 
 
+# ---------------------------------------------------------------------------
+# DÓNDE ESCALAR (agregado 25/11). Señales con reglas fijas, sin texto interpretativo.
+# ---------------------------------------------------------------------------
+G_PERDIDO_MIN = 10.0        # % impresiones perdidas por presupuesto para considerar "limitada"
+M_FREQ_VIGILAR = 2.5        # frecuencia del mes desde la que se vigila saturación
+M_FREQ_SATURA = 3.0         # frecuencia del mes desde la que se considera saturándose
+M_CPL_ALTO = 1.3            # CPL > 1,3x promedio = costo alto
+
+ESCALA_BADGE = {'Margen para escalar': 'ok', 'Estable': 'nometa', 'Limitada, pero cara': 'warn',
+                'Costo alto': 'warn', 'Vigilar frecuencia': 'warn', 'Saturándose': 'bad',
+                'Sin conversiones': 'bad', 'Sin dato': 'nodata'}
+
+
+def escala_badge(label):
+    return '<span class="badge {c}">{l}</span>'.format(c=ESCALA_BADGE.get(label, 'nometa'), l=esc(label))
+
+
+def render_escala_google(google_rows, google_unavailable):
+    if google_unavailable or not google_rows:
+        return '<tr><td colspan="5">Google Ads no disponible en este snapshot.</td></tr>'
+    tot_g = sum(r['gasto'] for r in google_rows)
+    tot_c = sum(r['conversiones'] for r in google_rows)
+    prom = (tot_g / tot_c) if tot_c else None
+    tr = ''
+    for r in sorted(google_rows, key=lambda r: (r['cpa'] is None, r['cpa'] or 0)):
+        perd = r.get('perdido_presupuesto')
+        if r['cpa'] is None:
+            label = 'Sin conversiones'
+        elif perd is None:
+            label = 'Sin dato'
+        elif perd >= G_PERDIDO_MIN and prom and r['cpa'] <= prom:
+            label = 'Margen para escalar'
+        elif perd >= G_PERDIDO_MIN:
+            label = 'Limitada, pero cara'
+        else:
+            label = 'Estable'
+        tr += ('<tr><td>{n}</td><td class="num">{g}</td><td class="num">{cpa}</td><td class="num">{p}</td>'
+               '<td>{b}</td></tr>').format(n=esc(r['campana']), g=money(r['gasto']),
+                                          cpa=money(r['cpa']) if r['cpa'] is not None else '—',
+                                          p=pct(perd, 0) if perd is not None else '—', b=escala_badge(label))
+    tr += ('<tr style="font-weight:600"><td>Promedio de la cuenta</td><td class="num">{g}</td>'
+           '<td class="num">{p}</td><td></td><td></td></tr>').format(g=money(tot_g), p=money(prom) if prom else '—')
+    return tr
+
+
+def render_escala_meta(adsets_raw):
+    rows = []
+    for e in adsets_raw or []:
+        if e.get('effective_status') != 'ACTIVE':
+            continue
+        spend = float((e.get('amount_spent') or {}).get('value') or 0)
+        if not spend:
+            continue
+        res = e.get('results') or {}
+        leads = float(res['values'][0]['value']) if res.get('values') else 0.0
+        try:
+            freq = float(e.get('frequency'))
+        except (TypeError, ValueError):
+            freq = None
+        rows.append({'nombre': e.get('name', ''), 'gasto': spend, 'leads': leads,
+                     'cpl': (spend / leads) if leads else None, 'freq': freq})
+    if not rows:
+        return '<tr><td colspan="6">Sin datos de conjuntos de anuncios de Meta Formulario Por Marca en este snapshot.</td></tr>'
+    tot_g = sum(r['gasto'] for r in rows)
+    tot_l = sum(r['leads'] for r in rows)
+    prom = (tot_g / tot_l) if tot_l else None
+    tr = ''
+    for r in sorted(rows, key=lambda r: (r['cpl'] is None, r['cpl'] or 0)):
+        if r['cpl'] is None:
+            label = 'Sin conversiones'
+        elif r['freq'] is not None and r['freq'] >= M_FREQ_SATURA:
+            label = 'Saturándose'
+        elif prom and r['cpl'] > prom * M_CPL_ALTO:
+            label = 'Costo alto'
+        elif r['freq'] is not None and r['freq'] >= M_FREQ_VIGILAR:
+            label = 'Vigilar frecuencia'
+        elif prom and r['cpl'] <= prom:
+            label = 'Margen para escalar'
+        else:
+            label = 'Estable'
+        tr += ('<tr><td>{n}</td><td class="num">{g}</td><td class="num">{l}</td><td class="num">{c}</td>'
+               '<td class="num">{f}</td><td>{b}</td></tr>').format(
+            n=esc(r['nombre']), g=money(r['gasto']), l=num(r['leads']),
+            c=money(r['cpl']) if r['cpl'] is not None else '—',
+            f=(f"{r['freq']:.1f}".replace('.', ',')) if r['freq'] is not None else '—', b=escala_badge(label))
+    tr += ('<tr style="font-weight:600"><td>Promedio Formulario Por Marca</td><td class="num">{g}</td>'
+           '<td class="num">{l}</td><td class="num">{c}</td><td></td><td></td></tr>').format(
+        g=money(tot_g), l=num(tot_l), c=money(prom) if prom else '—')
+    return tr
+
+
 def history_week_ago(history, today):
     """Entrada de hace ~7 días (6 a 8), del mismo mes. Prefiere exactamente 7."""
     best = None
@@ -707,6 +799,8 @@ def main():
     signals = calc_signals(excel_rows, summary, google_raw, resumen_values, presupuesto, now, ritmo_dias)
     blocks = resumen_blocks(resumen_values)
     cpv_rows, cpv_mes = render_costo_por_venta(blocks, now)
+    escala_google = render_escala_google(google_rows, google_unavailable)
+    escala_meta = render_escala_meta(load_optional('meta_adsets.json', []))
     historico_html = render_historico(blocks, now)
     signals_html = render_signals(signals, history_week_ago(history, now.date()))
     history = update_history(history, signals, now.date())
@@ -885,7 +979,7 @@ def main():
         dealer_rows=dealer_tr,
         channel_rows=channel_tr,
         signals_html=signals_html,
-        cpv_rows=cpv_rows, cpv_mes=cpv_mes, historico_html=historico_html,
+        cpv_rows=cpv_rows, cpv_mes=cpv_mes, escala_google=escala_google, escala_meta=escala_meta, historico_html=historico_html,
     )
 
     out_path = os.path.join(HERE, 'output.html')
@@ -1001,6 +1095,7 @@ TEMPLATE = r"""<!doctype html>
   .vcol:last-child .vbar {{ background: var(--color-fg); }}
   .vval {{ font-size: 0.68em; font-variant-numeric: tabular-nums; white-space: nowrap; }}
   .vlab {{ font-size: 0.72em; color: var(--color-fg-muted); }}
+  h3.sub {{ font-size: 0.85em; font-weight: 600; margin: 18px 0 8px; color: var(--color-fg-muted); text-transform: uppercase; letter-spacing: 0.5px; }}
   .badge.nodata, .badge.nometa {{ background: transparent; color: var(--color-fg-muted); border: 1px dashed var(--color-fg-muted); }}
 
   footer {{ margin-top: 40px; color: var(--color-fg-muted); font-size: 0.78em; }}
@@ -1123,6 +1218,25 @@ TEMPLATE = r"""<!doctype html>
     </div>
   </section>
 
+  <section id="escalar">
+    <h2>¿Dónde rinde más un peso extra?</h2>
+    <p class="section-note">Señales con reglas fijas, mes en curso. No son recomendaciones: muestran dónde hay demanda sin cubrir a un costo eficiente. El detalle de las reglas está en "Cómo se construye este pulso".</p>
+    <h3 class="sub">Google Ads · campañas limitadas por presupuesto</h3>
+    <div class="dash-table-wrap">
+      <table class="pulso-table">
+        <thead><tr><th>Campaña</th><th class="num">Gasto</th><th class="num">$/conversión</th><th class="num">Impr. perdidas por presupuesto</th><th>Señal</th></tr></thead>
+        <tbody>{escala_google}</tbody>
+      </table>
+    </div>
+    <h3 class="sub">Meta · Formulario Por Marca, por conjunto de anuncios</h3>
+    <div class="dash-table-wrap">
+      <table class="pulso-table">
+        <thead><tr><th>Marca</th><th class="num">Gasto</th><th class="num">Leads</th><th class="num">Costo por lead</th><th class="num">Frecuencia</th><th>Señal</th></tr></thead>
+        <tbody>{escala_meta}</tbody>
+      </table>
+    </div>
+  </section>
+
   <section id="costo-venta">
     <h2>Costo por venta por canal · {cpv_mes}</h2>
     <p class="section-note">Último mes con ventas cerradas, según la pestaña Resumen del Excel de Lu. El costo por lead no alcanza para decidir: un canal con leads caros puede convertir más a venta. La columna "% inversión / % ventas" muestra qué parte de la inversión de pauta se llevó cada canal y qué parte de las ventas de pauta generó.</p>
@@ -1165,6 +1279,7 @@ TEMPLATE = r"""<!doctype html>
     <summary>Cómo se construye este pulso</summary>
     <ul>
       <li>Señales de cuenta: (1) proyección de leads a fin de mes ÷ objetivo, del Excel de Lu — verde desde 100%, amarillo entre 80% y 100%, rojo debajo de 80%; el contexto cuenta los concesionarios con objetivo que proyectan menos del 60% de su meta. (2) Costo por lead de la pauta del mes (fila "Total Paid" de la pestaña Resumen de Lu) contra el mes anterior — verde si es igual o más barato, amarillo hasta 15% más caro, rojo si sube más. (3) Gasto real Meta + Google proyectado a fin de mes contra el presupuesto del mes — verde entre 90% y 105%, amarillo entre 80% y 115%, rojo fuera de eso; sin presupuesto cargado muestra "Sin dato". (4) Presupuesto extra estimado: leads que faltan entre la proyección a fin de mes y el objetivo × costo por lead actual de la pauta; se recalcula cada día sobre la proyección, sin esperar al cierre. Es un piso: supone que los leads extra cuestan lo mismo que los actuales. (5) Ritmo diario: leads reales ÷ días transcurridos, contra los leads por día que harían falta en los días restantes (días según el Excel de Lu); toma el mismo color que la señal 1. La comparación "hace una semana" usa el valor guardado 7 días antes dentro del mismo mes.</li>
+      <li>¿Dónde rinde más un peso extra? Google: "Margen para escalar" = pierde 10% o más de impresiones por presupuesto y su costo por conversión es igual o menor al promedio de la cuenta; "Limitada, pero cara" = pierde 10% o más por presupuesto pero cuesta más que el promedio; "Estable" = pierde menos de 10%. Dato de impresiones perdidas: planilla puente de Looker Studio. Meta (conjuntos activos de Formulario Por Marca): "Saturándose" = frecuencia del mes de 3 o más; "Costo alto" = costo por lead mayor a 1,3x el promedio de la campaña; "Vigilar frecuencia" = frecuencia entre 2,5 y 3; "Margen para escalar" = costo por lead igual o menor al promedio y frecuencia menor a 2,5; "Estable" = el resto.</li>
       <li>Costo por venta por canal e histórico: salen de la pestaña Resumen del Excel de Lu (último mes cerrado y los 6 meses cerrados anteriores). El costo por venta se recalcula siempre como inversión ÷ ventas, sin usar la columna del Excel, para que todos los meses se calculen igual.</li>
       <li>Meta Ads y Google Ads: gasto y resultados reales desde el día 1 del mes en curso hasta hoy. Esta página se regenera una vez por día (no en vivo, a diferencia de la versión que vive en Claude).</li>
       <li>Excel de Lu: fila TOTAL y detalle por concesionario de la hoja "INV x CONCE Proyección". Si Lu arma una pestaña nueva para el próximo mes con otro nombre, hay que avisarle a Claude para actualizar el rango.</li>
