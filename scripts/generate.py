@@ -404,7 +404,7 @@ def money_m(v):
     return money(v)
 
 
-def calc_signals(excel_rows, summary, google_raw, resumen_values, presupuesto, now):
+def calc_signals(excel_rows, summary, google_raw, resumen_values, presupuesto, now, ritmo_dias=(None, None)):
     total = next((r for r in excel_rows if r['marca'] == 'TOTAL'), None) or {}
     sig = {}
 
@@ -483,6 +483,41 @@ def calc_signals(excel_rows, summary, google_raw, resumen_values, presupuesto, n
         'valor': gasto_proy, 'pct': gasto_pct, 'estado': estado, 'detalle': det,
         'contexto': 'Gasto real Meta + Google al día {} de {}, proyectado a fin de mes'.format(now.day, dias),
     }
+
+    # 4 · Presupuesto extra estimado para cumplir el objetivo (sobre la proyección)
+    objetivo = summary['objetivo_mes']
+    proyectado = summary['proyeccion_fin_mes']
+    if objetivo is None or proyectado is None or cpl is None:
+        sig['extra'] = {'valor': None, 'estado': 'nodata', 'detalle': 'Falta la proyección o el costo por lead',
+                        'contexto': ''}
+    else:
+        faltan = objetivo - proyectado
+        if faltan <= 0:
+            sig['extra'] = {'valor': 0.0, 'estado': 'ok', 'texto': 'No hace falta',
+                            'detalle': 'La proyección ya supera el objetivo por {} leads'.format(num(-faltan)),
+                            'contexto': 'Estimado sobre la proyección del Excel de Lu.'}
+        else:
+            sig['extra'] = {
+                'valor': faltan * cpl, 'estado': sig['proy']['estado'],
+                'detalle': 'Faltan {} leads (proyectado {} vs. objetivo {}) × {} por lead'.format(
+                    num(faltan), num(proyectado), num(objetivo), money(cpl)),
+                'contexto': 'Estimado: supone que los leads extra cuestan lo mismo que los actuales. Al subir la inversión el costo por lead suele subir, así que es un piso.',
+            }
+
+    # 5 · Ritmo diario de leads: actual vs. necesario para llegar al objetivo
+    leads = summary['leads_totales']
+    d_trans, d_rest = ritmo_dias
+    if leads is None or objetivo is None or not d_trans:
+        sig['ritmo'] = {'valor': None, 'estado': 'nodata', 'detalle': 'Sin datos de leads del Excel de Lu', 'contexto': ''}
+    else:
+        actual = leads / d_trans
+        if d_rest and d_rest > 0:
+            necesario = max(objetivo - leads, 0) / d_rest
+            det = 'Harían falta {} por día en los {} días que quedan'.format(num(necesario), d_rest)
+        else:
+            det = 'Último día del mes'
+        sig['ritmo'] = {'valor': actual, 'estado': sig['proy']['estado'], 'detalle': det,
+                        'contexto': '{} leads reales en {} días (Excel de Lu)'.format(num(leads), d_trans)}
     return sig
 
 
@@ -505,7 +540,8 @@ def render_signals(sig, week_ago):
 
     def sig_val(key):
         return {'proy_pct': sig['proy']['valor'], 'cpl_pauta': sig['cpl']['valor'],
-                'gasto_proy': sig['gasto']['valor']}[key]
+                'gasto_proy': sig['gasto']['valor'], 'extra': sig['extra']['valor'],
+                'ritmo': sig['ritmo']['valor']}[key]
 
     cards = [
         ('¿Llegamos al objetivo de leads?', pct(sig['proy']['valor'], 0) if sig['proy']['valor'] is not None else '—',
@@ -514,6 +550,12 @@ def render_signals(sig, week_ago):
          'costo por lead de la pauta', sig['cpl'], delta('cpl_pauta', money, False)),
         ('¿Vamos bien de ritmo de gasto?', money_m(sig['gasto']['valor']),
          'gasto proyectado a fin de mes', sig['gasto'], delta('gasto_proy', money_m, None)),
+        ('Presupuesto extra para cumplir el objetivo · estimado',
+         sig['extra'].get('texto') or money_m(sig['extra']['valor']),
+         'más en el mes' if not sig['extra'].get('texto') and sig['extra']['valor'] else '',
+         sig['extra'], delta('extra', money_m, False)),
+        ('¿A qué ritmo entran los leads?', num(sig['ritmo']['valor']) if sig['ritmo']['valor'] is not None else '—',
+         'leads por día', sig['ritmo'], delta('ritmo', num, True)),
     ]
     out = ''
     for titulo, valor, unidad, s, d in cards:
@@ -530,7 +572,8 @@ def render_signals(sig, week_ago):
 
 def update_history(history, sig, today):
     entry = {'fecha': today.isoformat(), 'proy_pct': sig['proy']['valor'],
-             'cpl_pauta': sig['cpl']['valor'], 'gasto_proy': sig['gasto']['valor']}
+             'cpl_pauta': sig['cpl']['valor'], 'gasto_proy': sig['gasto']['valor'],
+             'extra': sig['extra']['valor'], 'ritmo': sig['ritmo']['valor']}
     history = [h for h in history if h.get('fecha') != entry['fecha']] + [entry]
     history.sort(key=lambda h: h.get('fecha', ''))
     return history[-120:]
@@ -559,7 +602,11 @@ def main():
     resumen_values = load_optional('resumen_values.json', [])
     presupuesto = load_optional('presupuesto.json', {})
     history = load_optional('history.json', [])
-    signals = calc_signals(excel_rows, summary, google_raw, resumen_values, presupuesto, now)
+    try:
+        ritmo_dias = (int(parse_num(excel_values[1][7])), int(parse_num(excel_values[1][8])))
+    except (IndexError, TypeError, ValueError):
+        ritmo_dias = (now.day, summary['dias_totales'] - now.day)
+    signals = calc_signals(excel_rows, summary, google_raw, resumen_values, presupuesto, now, ritmo_dias)
     signals_html = render_signals(signals, history_week_ago(history, now.date()))
     history = update_history(history, signals, now.date())
     with open(os.path.join(HERE, 'history.json'), 'w', encoding='utf-8') as f:
@@ -978,7 +1025,7 @@ TEMPLATE = r"""<!doctype html>
   <details class="methodology">
     <summary>Cómo se construye este pulso</summary>
     <ul>
-      <li>Señales de cuenta: (1) proyección de leads a fin de mes ÷ objetivo, del Excel de Lu — verde desde 100%, amarillo entre 80% y 100%, rojo debajo de 80%; el contexto cuenta los concesionarios con objetivo que proyectan menos del 60% de su meta. (2) Costo por lead de la pauta del mes (fila "Total Paid" de la pestaña Resumen de Lu) contra el mes anterior — verde si es igual o más barato, amarillo hasta 15% más caro, rojo si sube más. (3) Gasto real Meta + Google proyectado a fin de mes contra el presupuesto del mes — verde entre 90% y 105%, amarillo entre 80% y 115%, rojo fuera de eso; sin presupuesto cargado muestra "Sin dato". La comparación "hace una semana" usa el valor guardado 7 días antes dentro del mismo mes.</li>
+      <li>Señales de cuenta: (1) proyección de leads a fin de mes ÷ objetivo, del Excel de Lu — verde desde 100%, amarillo entre 80% y 100%, rojo debajo de 80%; el contexto cuenta los concesionarios con objetivo que proyectan menos del 60% de su meta. (2) Costo por lead de la pauta del mes (fila "Total Paid" de la pestaña Resumen de Lu) contra el mes anterior — verde si es igual o más barato, amarillo hasta 15% más caro, rojo si sube más. (3) Gasto real Meta + Google proyectado a fin de mes contra el presupuesto del mes — verde entre 90% y 105%, amarillo entre 80% y 115%, rojo fuera de eso; sin presupuesto cargado muestra "Sin dato". (4) Presupuesto extra estimado: leads que faltan entre la proyección a fin de mes y el objetivo × costo por lead actual de la pauta; se recalcula cada día sobre la proyección, sin esperar al cierre. Es un piso: supone que los leads extra cuestan lo mismo que los actuales. (5) Ritmo diario: leads reales ÷ días transcurridos, contra los leads por día que harían falta en los días restantes (días según el Excel de Lu); toma el mismo color que la señal 1. La comparación "hace una semana" usa el valor guardado 7 días antes dentro del mismo mes.</li>
       <li>Meta Ads y Google Ads: gasto y resultados reales desde el día 1 del mes en curso hasta hoy. Esta página se regenera una vez por día (no en vivo, a diferencia de la versión que vive en Claude).</li>
       <li>Excel de Lu: fila TOTAL y detalle por concesionario de la hoja "INV x CONCE Proyección". Si Lu arma una pestaña nueva para el próximo mes con otro nombre, hay que avisarle a Claude para actualizar el rango.</li>
       <li>Campaña 1 (Prioritarios) y Campaña 2 (Genérica BYD + no prioritarios) son un trabajo aparte que se le hace directamente a la terminal BYD, no a los concesionarios Brum. Se excluyen por completo de este tablero — de la tabla de Meta Ads, de la inversión total y de cualquier cruce — porque nunca van a aparecer en el Excel de Lu (corregido 20/11 por aclaración directa de Agos).</li>
