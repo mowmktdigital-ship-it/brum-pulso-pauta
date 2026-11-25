@@ -1220,7 +1220,7 @@ TEMPLATE = r"""<!doctype html>
   <header>
     <p class="eyebrow">BRUM — Pauta · Pulso (snapshot diario)</p>
     <h1>Pulso de Pauta</h1>
-    <p class="lead">{headline}</p>
+    <p class="lead">Gasto real de pauta del mes (Meta + Google): {gasto_total}.</p>
     <p class="note">
       Mes en curso: <b>{periodo_label}</b> (día {dia} de {dias_totales}).
       Esta página se regenera automáticamente una vez por día con datos de Meta Ads, Google Ads y el Excel de Lu.
@@ -1252,11 +1252,6 @@ TEMPLATE = r"""<!doctype html>
       <span class="kpi-label">Gasto real total</span>
       <span class="kpi-value">{gasto_total}</span>
       <span class="kpi-sub">Meta + Google, plataforma</span>
-    </div>
-    <div class="kpi-card bad">
-      <span class="kpi-label">Gap vs. Excel de Lu</span>
-      <span class="kpi-value">{gap_total}</span>
-      <span class="kpi-sub">{gap_pct_sub}</span>
     </div>
   </section>
 
@@ -1303,18 +1298,6 @@ TEMPLATE = r"""<!doctype html>
       <table class="pulso-table">
         <thead><tr><th>Campaña</th><th class="num">Gasto</th><th class="num">Conversiones</th><th class="num">CPA</th></tr></thead>
         <tbody>{google_rows}</tbody>
-      </table>
-    </div>
-  </section>
-
-  <section id="cruce">
-    <h2>Cruce con el Excel de Lu</h2>
-    <p class="section-note">{cruce_resumen}</p>
-    <div class="chart-box">{gap_chart}</div>
-    <div class="dash-table-wrap">
-      <table class="pulso-table">
-        <thead><tr><th class="wrap">Componente del gap</th><th class="num">Monto</th><th class="num">% del gap</th><th class="wrap">Explicación</th></tr></thead>
-        <tbody>{gap_rows}</tbody>
       </table>
     </div>
   </section>
@@ -1397,7 +1380,6 @@ TEMPLATE = r"""<!doctype html>
       <li>Meta Ads y Google Ads: gasto y resultados reales desde el día 1 del mes en curso hasta hoy. Esta página se regenera una vez por día (no en vivo, a diferencia de la versión que vive en Claude).</li>
       <li>Excel de Lu: fila TOTAL y detalle por concesionario de la hoja "INV x CONCE Proyección". Si Lu arma una pestaña nueva para el próximo mes con otro nombre, hay que avisarle a Claude para actualizar el rango.</li>
       <li>Campaña 1 (Prioritarios), Campaña 2 (Genérica BYD + no prioritarios) y Campaña 3 (Escala Seal 5, sumada el 25/11) son un trabajo aparte que se le hace directamente a la terminal BYD, no a los concesionarios Brum. Se excluyen por completo de este tablero — de la tabla de Meta Ads, de la inversión total y de cualquier cruce — porque nunca van a aparecer en el Excel de Lu (corregido 20/11 por aclaración directa de Agos).</li>
-      <li>El gap se reparte en varios componentes con la misma metodología del informe semanal. Meta Oportunidades = campañas "Leads + nombre del concesionario" (corregido el 18/11 por aclaración directa de Lu) y "Oportunidades en el sitio web" (sumada el 25/11). Las demás campañas de Meta se mapean por su nombre exacto a un bucket; si Meta cambia o agrega campañas, puede aparecer una fila "Campañas Meta sin clasificar": es la señal de que hay que revisar el mapeo.</li>
       <li>El CPL por concesionario usa inversión reportada en el Excel ÷ leads reales reportados en el Excel, igual que en el informe semanal. El semáforo es puramente por CPL vs. promedio: más de 2x es "Revisar prioritario", entre 1,3x y 2x es "Revisar", entre 1x y 1,3x es "A vigilar", 1x o menos es "OK".</li>
       <li>Leads por canal: toma directamente las columnas que el Excel de Lu ya calcula por canal (Google Pauta, Meta Oportunidades, Meta Formulario, Filtrado de Leads/WhatsApp, y los dos orgánicos). El CPL de cada canal es inversión ÷ leads reales de ese canal; la tasa de conversión a venta es ventas ÷ leads reales de ese canal, tal cual las carga Lu. La fila TOTAL incluye los leads orgánicos, que diluyen el CPL y la tasa de conversión promedio de cuenta.</li>
       <li>El avance hacia el objetivo del mes y la proyección a fin de mes usan las columnas que el propio Excel de Lu ya calcula (objetivo, reales y proyectados a fin de mes).</li>
