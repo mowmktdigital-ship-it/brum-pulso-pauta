@@ -9,5 +9,16 @@
   "meta_acum": 7445890.38,
   "google_acum": 1284252.87,
   "google_as_of": "2026-11-25"
+ },
+ {
+  "fecha": "2026-11-26",
+  "proy_pct": 91.98606271777004,
+  "cpl_pauta": 8971.0,
+  "gasto_proy": 10546455.450000001,
+  "extra": 1031665.0,
+  "ritmo": 44.0,
+  "meta_acum": 7720971.55,
+  "google_acum": 1419289.84,
+  "google_as_of": "2026-11-26"
  }
 ]
