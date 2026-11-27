@@ -976,8 +976,8 @@ def main():
                 reales_txt, cpl_real_txt = 'sin canal en el Excel', '—'
             meta_tr += (
                 '<tr><td>{campana}</td><td class="num">{gasto}</td>'
-                '<td>{rtipo}</td><td class="num">{resultado}</td><td class="num">{cpl}</td>'
-                '<td class="num">{reales}</td><td class="num">{cpl_real}</td></tr>'
+                '<td class="num strong">{reales}</td><td class="num strong">{cpl_real}</td>'
+                '<td class="ref">{rtipo}</td><td class="num ref">{resultado}</td><td class="num ref">{cpl}</td></tr>'
             ).format(
                 campana=esc(r['campana']), gasto=money(r['gasto']),
                 rtipo=esc(RESULTADO_LABELS.get(r['resultado_tipo'], 'Otro resultado')),
@@ -1261,6 +1261,8 @@ TEMPLATE = r"""<!doctype html>
   .entrega-alerta.bad {{ background: color-mix(in srgb, var(--color-bad) 15%, transparent); color: var(--color-bad); border: 1px solid var(--color-bad); }}
   .entrega-alerta.warn {{ background: color-mix(in srgb, var(--color-warn) 15%, transparent); color: var(--color-warn); border: 1px solid var(--color-warn); }}
   .entrega-lineas {{ font-size: 0.82em; color: var(--color-fg-muted); line-height: 1.6; }}
+  table.pulso-table td.strong {{ font-weight: 600; }}
+  table.pulso-table .ref {{ color: var(--color-fg-muted); font-size: 0.85em; }}
   h3.sub {{ font-size: 0.85em; font-weight: 600; margin: 18px 0 8px; color: var(--color-fg-muted); text-transform: uppercase; letter-spacing: 0.5px; }}
   .badge.nodata, .badge.nometa {{ background: transparent; color: var(--color-fg-muted); border: 1px dashed var(--color-fg-muted); }}
 
@@ -1338,10 +1340,10 @@ TEMPLATE = r"""<!doctype html>
 
   <section id="meta">
     <h2>Meta Ads por campaña</h2>
-    <p class="section-note">Gasto y costo por resultado de cada campaña activa, mes en curso, agrupadas según el objetivo de la campaña en Meta: primero las de leads, después el resto. "Cantidad (Meta)" es lo que reporta la plataforma (puede incluir clics o conversaciones, y no siempre coincide con un lead real); "Leads reales" es lo que registra el Excel de Lu para el canal de esa campaña, y "Costo por lead real" divide el gasto de la campaña por esos leads. No incluye las Campañas 1, 2 y 3 (BYD terminal).</p>
+    <p class="section-note">Gasto y costo por resultado de cada campaña activa, mes en curso, agrupadas según el objetivo de la campaña en Meta: primero las de leads, después el resto. "Leads reales" son los que registra el sheet de Lu para el canal de esa campaña, y "Costo por lead real" divide el gasto de la campaña por esos leads. Las columnas en gris son solo referencia: lo que reporta Meta (puede incluir clics o conversaciones, y no siempre coincide con un lead real). No incluye las Campañas 1, 2 y 3 (BYD terminal).</p>
     <div class="dash-table-wrap">
       <table class="pulso-table">
-        <thead><tr><th>Campaña</th><th class="num">Gasto</th><th>Resultado (según Meta)</th><th class="num">Cantidad (Meta)</th><th class="num">Costo / resultado (Meta)</th><th class="num">Leads reales (Excel de Lu)</th><th class="num">Costo por lead real</th></tr></thead>
+        <thead><tr><th>Campaña</th><th class="num">Gasto</th><th class="num">Leads reales (sheet de Lu)</th><th class="num">Costo por lead real</th><th class="ref">Referencia: qué reporta Meta</th><th class="num ref">Cantidad</th><th class="num ref">Costo / resultado</th></tr></thead>
         <tbody>{meta_rows}</tbody>
       </table>
     </div>
