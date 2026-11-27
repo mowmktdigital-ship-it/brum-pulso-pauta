@@ -545,7 +545,45 @@ def render_escala_google(google_rows, google_unavailable):
     return tr
 
 
-def render_escala_meta(adsets_raw):
+MARCA_ALIAS = {'vw': ['volkswagen', 'vw'], 'gwm': ['haval', 'gwm']}
+
+
+def _norm(t):
+    import unicodedata
+    return ''.join(c for c in unicodedata.normalize('NFD', (t or '').lower()) if unicodedata.category(c) != 'Mn')
+
+
+def leads_sheet_por_marca(excel_rows_raw, marcas_values):
+    """{marca_normalizada: leads Meta Formulario del sheet} sumando los concesionarios de cada marca
+    (relación concesionario → marca de la pestaña "Inversion Oportunidades", columnas I:K)."""
+    if not marcas_values:
+        return {}
+    marca_de = {}
+    for r in marcas_values[1:]:
+        if len(r) >= 2 and r[0].strip() and r[1].strip():
+            marca_de[r[0].strip()] = _norm(r[1].strip())
+    out = {}
+    for r in excel_rows_raw[4:]:
+        if not r or not r[0] or r[0] == 'TOTAL':
+            continue
+        m = marca_de.get(r[0].strip())
+        if not m:
+            continue
+        leads = parse_num(r[34] if len(r) > 34 else None) or 0
+        out[m] = out.get(m, 0) + leads
+    return out
+
+
+def marca_de_conjunto(nombre, marcas):
+    n = _norm(nombre)
+    for m in sorted(marcas, key=len, reverse=True):
+        for alias in MARCA_ALIAS.get(m, [m]):
+            if alias and alias in n:
+                return m
+    return None
+
+
+def render_escala_meta(adsets_raw, sheet_marca=None):
     rows = []
     for e in adsets_raw or []:
         if e.get('effective_status') != 'ACTIVE':
@@ -559,7 +597,12 @@ def render_escala_meta(adsets_raw):
             freq = float(e.get('frequency'))
         except (TypeError, ValueError):
             freq = None
-        rows.append({'nombre': e.get('name', ''), 'gasto': spend, 'leads': leads,
+        fuente = 'meta'
+        if sheet_marca:
+            m = marca_de_conjunto(e.get('name', ''), sheet_marca.keys())
+            if m is not None:
+                leads, fuente = float(sheet_marca[m]), 'sheet'
+        rows.append({'nombre': e.get('name', ''), 'gasto': spend, 'leads': leads, 'fuente': fuente,
                      'cpl': (spend / leads) if leads else None, 'freq': freq})
     if not rows:
         return '<tr><td colspan="6">Sin datos de conjuntos de anuncios de Meta Formulario Por Marca en este snapshot.</td></tr>'
@@ -582,7 +625,7 @@ def render_escala_meta(adsets_raw):
             label = 'Estable'
         tr += ('<tr><td>{n}</td><td class="num">{g}</td><td class="num">{l}</td><td class="num">{c}</td>'
                '<td class="num">{f}</td><td>{b}</td></tr>').format(
-            n=esc(r['nombre']), g=money(r['gasto']), l=num(r['leads']),
+            n=esc(r['nombre']), g=money(r['gasto']), l=num(r['leads']) + ('' if r['fuente'] == 'sheet' else ' (Meta)'),
             c=money(r['cpl']) if r['cpl'] is not None else '—',
             f=(f"{r['freq']:.1f}".replace('.', ',')) if r['freq'] is not None else '—', b=escala_badge(label))
     tr += ('<tr style="font-weight:600"><td>Promedio Formulario Por Marca</td><td class="num">{g}</td>'
@@ -919,7 +962,8 @@ def main():
     blocks = resumen_blocks(resumen_values)
     cpv_rows, cpv_mes = render_costo_por_venta(blocks, now)
     escala_google = render_escala_google(google_rows, google_unavailable)
-    escala_meta = render_escala_meta(load_optional('meta_adsets.json', []))
+    escala_meta = render_escala_meta(load_optional('meta_adsets.json', []),
+                                     leads_sheet_por_marca(excel_values, load_optional('marcas_values.json', [])))
     historico_html = render_historico(blocks, now)
     signals_html = render_signals(signals, history_week_ago(history, now.date()))
     entrega_alertas, entrega_lineas = calc_entrega(
@@ -1384,7 +1428,7 @@ TEMPLATE = r"""<!doctype html>
     <h3 class="sub">Meta · Formulario Por Marca, por conjunto de anuncios</h3>
     <div class="dash-table-wrap">
       <table class="pulso-table">
-        <thead><tr><th>Marca</th><th class="num">Gasto</th><th class="num">Leads</th><th class="num">Costo por lead</th><th class="num">Frecuencia</th><th>Señal</th></tr></thead>
+        <thead><tr><th>Marca</th><th class="num">Gasto</th><th class="num">Leads reales (sheet)</th><th class="num">Costo por lead real</th><th class="num">Frecuencia</th><th>Señal</th></tr></thead>
         <tbody>{escala_meta}</tbody>
       </table>
     </div>
@@ -1432,7 +1476,7 @@ TEMPLATE = r"""<!doctype html>
     <summary>Cómo se construye este pulso</summary>
     <ul>
       <li>Señales de cuenta: (1) proyección de leads a fin de mes ÷ objetivo, del Excel de Lu — verde desde 100%, amarillo entre 80% y 100%, rojo debajo de 80%; el contexto cuenta los concesionarios con objetivo que proyectan menos del 60% de su meta. (2) Costo por lead de la pauta del mes (fila "Total Paid" de la pestaña Resumen de Lu) contra el mes anterior — verde si es igual o más barato, amarillo hasta 15% más caro, rojo si sube más. (3) Gasto real Meta + Google proyectado a fin de mes contra el presupuesto del mes — verde entre 90% y 105%, amarillo entre 80% y 115%, rojo fuera de eso; sin presupuesto cargado muestra "Sin dato". (4) Presupuesto extra estimado: leads que faltan entre la proyección a fin de mes y el objetivo × costo por lead actual de la pauta; se recalcula cada día sobre la proyección, sin esperar al cierre. Es un piso: supone que los leads extra cuestan lo mismo que los actuales. (5) Ritmo diario: leads reales ÷ días transcurridos, contra los leads por día que harían falta en los días restantes (días según el Excel de Lu); toma el mismo color que la señal 1. La comparación "hace una semana" usa el valor guardado 7 días antes dentro del mismo mes.</li>
-      <li>¿Dónde rinde más un peso extra? Google: "Margen para escalar" = pierde 10% o más de impresiones por presupuesto y su costo por conversión es igual o menor al promedio de la cuenta; "Limitada, pero cara" = pierde 10% o más por presupuesto pero cuesta más que el promedio; "Estable" = pierde menos de 10%. Dato de impresiones perdidas: planilla puente de Looker Studio. Meta (conjuntos activos de Formulario Por Marca): "Saturándose" = frecuencia del mes de 3 o más; "Costo alto" = costo por lead mayor a 1,3x el promedio de la campaña; "Vigilar frecuencia" = frecuencia entre 2,5 y 3; "Margen para escalar" = costo por lead igual o menor al promedio y frecuencia menor a 2,5; "Estable" = el resto.</li>
+      <li>¿Dónde rinde más un peso extra? Google: "Margen para escalar" = pierde 10% o más de impresiones por presupuesto y su costo por conversión es igual o menor al promedio de la cuenta; "Limitada, pero cara" = pierde 10% o más por presupuesto pero cuesta más que el promedio; "Estable" = pierde menos de 10%. Dato de impresiones perdidas: planilla puente de Looker Studio. Meta (conjuntos activos de Formulario Por Marca; los leads son los del sheet de Lu en Meta Formulario, sumando los concesionarios de cada marca según la pestaña "Inversion Oportunidades"; si una marca no se puede relacionar, se usan los leads de Meta y se marca "(Meta)"): "Saturándose" = frecuencia del mes de 3 o más; "Costo alto" = costo por lead mayor a 1,3x el promedio de la campaña; "Vigilar frecuencia" = frecuencia entre 2,5 y 3; "Margen para escalar" = costo por lead igual o menor al promedio y frecuencia menor a 2,5; "Estable" = el resto.</li>
       <li>Alertas de entrega: se compara el gasto de cada uno de los dos últimos días contra el presupuesto diario de la plataforma (presupuesto del mes ÷ días del mes). Si los dos días están en 5% o menos: "sin entrega"; si están en 50% o menos: "consumo bajo". Meta usa el gasto diario por campaña (sin las campañas de BYD terminal); Google usa la diferencia entre los acumulados de reportes de Looker Studio de días consecutivos.</li>
       <li>Costo por venta por canal e histórico: salen de la pestaña Resumen del Excel de Lu (último mes cerrado y los 6 meses cerrados anteriores). El costo por venta se recalcula siempre como inversión ÷ ventas, sin usar la columna del Excel, para que todos los meses se calculen igual.</li>
       <li>Meta Ads y Google Ads: gasto y resultados reales desde el día 1 del mes en curso hasta hoy. Esta página se regenera una vez por día (no en vivo, a diferencia de la versión que vive en Claude).</li>
