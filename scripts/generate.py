@@ -45,6 +45,8 @@ def build_meta_rows(raw):
             resultado_tipo = 'leads'
         elif 'landing_page_view' in indicator:
             resultado_tipo = 'vistas_landing'
+        elif 'brum_unidad_whatsapp' in indicator:
+            resultado_tipo = 'clics_whatsapp'
         elif 'messaging_conversation_started' in indicator:
             resultado_tipo = 'conversaciones'
         elif indicator == 'profile_visit_view':
@@ -125,7 +127,18 @@ CHANNEL_DEFS = [
 ]
 
 
-def build_channel_rows(excel_values):
+# 27/11 (Lu): las ventas por canal se toman de la pestaña Resumen (bloque del mes), que es
+# donde Lu consolida el origen de cada venta. Las columnas de ventas por canal de
+# "INV x CONCE Proyeccion" no coinciden con Resumen, así que solo se usan como respaldo.
+RESUMEN_FILA_CANAL = {
+    'Google Ads (pauta)': ['google ads'], 'Meta Oportunidades': ['meta oportunidades'],
+    'Meta Formulario': ['meta formulario'], 'Filtrado de Leads / WhatsApp': ['whatsapp - filtrado'],
+    'Orgánico Google': ['seo', 'seo organico'], 'Orgánico Redes': ['meta orgánico', 'meta organico'],
+    'Otros orígenes': ['otros (directo, referido)', 'formularios sitio web', 'formulario interno'],
+}
+
+
+def build_channel_rows(excel_values, resumen_mes=None):
     total = next((r for r in excel_values[4:] if r and r[0] == 'TOTAL'), None)
     if not total:
         return [], None
@@ -137,8 +150,12 @@ def build_channel_rows(excel_values):
     for nombre, i_leads, i_inv, i_ventas, i_tasa in CHANNEL_DEFS:
         leads = parse_num(g(i_leads))
         inv = parse_num(g(i_inv)) if i_inv is not None else None
-        ventas = parse_num(g(i_ventas))
-        tasa = parse_num(g(i_tasa))
+        if resumen_mes:
+            ventas = sum((resumen_mes.get(k) or {}).get('ventas') or 0 for k in RESUMEN_FILA_CANAL[nombre])
+            tasa = (ventas / leads * 100) if leads else None
+        else:
+            ventas = parse_num(g(i_ventas))
+            tasa = parse_num(g(i_tasa))
         cpl = (inv / leads) if (inv is not None and leads) else None
         rows.append({
             'canal': nombre, 'leads': leads, 'inversion': inv, 'cpl': cpl,
@@ -149,6 +166,8 @@ def build_channel_rows(excel_values):
         'leads': parse_num(g(2)), 'inversion': parse_num(g(7)), 'cpl': parse_num(g(8)),
         'ventas': parse_num(g(4)), 'tasa_conv': None,
     }
+    if resumen_mes:
+        overall['ventas'] = sum(r['ventas'] or 0 for r in rows)
     if overall['ventas'] is not None and overall['leads']:
         overall['tasa_conv'] = overall['ventas'] / overall['leads'] * 100
     return rows, overall
@@ -321,6 +340,7 @@ def esc(s):
 RESULTADO_LABELS = {
     'leads': 'Leads', 'vistas_landing': 'Vistas de landing',
     'conversaciones': 'Conversaciones iniciadas', 'visitas_perfil': 'Visitas de perfil',
+    'clics_whatsapp': 'Clics a WhatsApp (sitio)',
     'otro': 'Otro resultado',
 }
 
@@ -882,7 +902,8 @@ def main():
     gap_rows = calc_excel_gap(excel_rows, meta_rows, google_rows)
     dealer_rows = calc_dealer_cpl(excel_rows)
     alert_rows = calc_alerts(meta_rows, google_rows)
-    channel_rows, channel_total = build_channel_rows(excel_values)
+    channel_rows, channel_total = build_channel_rows(
+        excel_values, resumen_blocks(load_optional('resumen_values.json', [])).get(now.month - 1))
 
     google_unavailable = bool(google_raw.get('unavailable'))
     google_stale = (not google_unavailable) and google_raw.get('as_of') != now.strftime('%Y-%m-%d')
@@ -912,6 +933,26 @@ def main():
     with open(os.path.join(HERE, 'history.json'), 'w', encoding='utf-8') as f:
         json.dump(history, f, ensure_ascii=False, indent=1)
 
+    total_xl = next((r for r in excel_values[4:] if r and r[0] == 'TOTAL'), None) or []
+    def _xl(i):
+        return parse_num(total_xl[i]) if i < len(total_xl) else None
+    bucket_leads = {'formulario': _xl(34), 'oportunidades': _xl(27), 'filtrado': _xl(44)}
+
+    def bucket_de(nombre):
+        if nombre in FORMULARIO_NAMES:
+            return 'formulario'
+        if _es_oportunidades_real(nombre):
+            return 'oportunidades'
+        if nombre in FILTRADO_NAMES:
+            return 'filtrado'
+        return None
+    bucket_count = {}
+    for r in meta_rows:
+        b = bucket_de(r['campana'])
+        if b:
+            bucket_count[b] = bucket_count.get(b, 0) + 1
+    hay_compartidos = False
+
     meta_tr = ''
     grupos = [
         ('Campañas de leads', [r for r in meta_rows if r['objetivo'] == 'OUTCOME_LEADS']),
@@ -920,20 +961,35 @@ def main():
     for titulo_grupo, filas in grupos:
         if not filas:
             continue
-        meta_tr += ('<tr class="group-row"><td colspan="2">{t}</td><td class="num">{g}</td>'
-                    '<td colspan="3"></td></tr>').format(t=esc(titulo_grupo), g=money(sum(r['gasto'] for r in filas)))
+        meta_tr += ('<tr class="group-row"><td>{t}</td><td class="num">{g}</td>'
+                    '<td colspan="5"></td></tr>').format(t=esc(titulo_grupo), g=money(sum(r['gasto'] for r in filas)))
         for r in sorted(filas, key=lambda r: -r['gasto']):
+            b = bucket_de(r['campana'])
+            reales = bucket_leads.get(b) if b else None
+            if b and reales is not None and bucket_count.get(b, 0) > 1:
+                hay_compartidos = True
+                reales_txt, cpl_real_txt = num(reales) + '*', '—'
+            elif b and reales is not None:
+                reales_txt = num(reales)
+                cpl_real_txt = money(r['gasto'] / reales) if reales else '—'
+            else:
+                reales_txt, cpl_real_txt = 'sin canal en el Excel', '—'
             meta_tr += (
-                '<tr><td>{campana}</td><td>{estado}</td><td class="num">{gasto}</td>'
-                '<td>{rtipo}</td><td class="num">{resultado}</td><td class="num">{cpl}</td></tr>'
+                '<tr><td>{campana}</td><td class="num">{gasto}</td>'
+                '<td>{rtipo}</td><td class="num">{resultado}</td><td class="num">{cpl}</td>'
+                '<td class="num">{reales}</td><td class="num">{cpl_real}</td></tr>'
             ).format(
-                campana=esc(r['campana']), estado=esc(r['estado']), gasto=money(r['gasto']),
+                campana=esc(r['campana']), gasto=money(r['gasto']),
                 rtipo=esc(RESULTADO_LABELS.get(r['resultado_tipo'], 'Otro resultado')),
                 resultado=num(r['resultado']) if r['resultado'] is not None else '—',
                 cpl=money(r['cpl']) if r['cpl'] is not None else '—',
+                reales=reales_txt, cpl_real=cpl_real_txt,
             )
+    if hay_compartidos:
+        meta_tr += ('<tr><td colspan="7" class="wrap note">* Varias campañas activas comparten este canal en el '
+                    'Excel de Lu: el número es el total del canal, no de la campaña.</td></tr>')
     if not meta_rows:
-        meta_tr = '<tr><td colspan="6">—</td></tr>'
+        meta_tr = '<tr><td colspan="7">—</td></tr>'
 
     google_tr = ''
     for r in sorted(google_rows, key=lambda r: -r['gasto']):
@@ -1282,10 +1338,10 @@ TEMPLATE = r"""<!doctype html>
 
   <section id="meta">
     <h2>Meta Ads por campaña</h2>
-    <p class="section-note">Gasto y costo por resultado de cada campaña activa, mes en curso, agrupadas según el objetivo de la campaña en Meta: primero las de leads, después el resto. No incluye las Campañas 1, 2 y 3 (BYD terminal).</p>
+    <p class="section-note">Gasto y costo por resultado de cada campaña activa, mes en curso, agrupadas según el objetivo de la campaña en Meta: primero las de leads, después el resto. "Cantidad (Meta)" es lo que reporta la plataforma (puede incluir clics o conversaciones, y no siempre coincide con un lead real); "Leads reales" es lo que registra el Excel de Lu para el canal de esa campaña, y "Costo por lead real" divide el gasto de la campaña por esos leads. No incluye las Campañas 1, 2 y 3 (BYD terminal).</p>
     <div class="dash-table-wrap">
       <table class="pulso-table">
-        <thead><tr><th>Campaña</th><th>Estado</th><th class="num">Gasto</th><th>Resultado</th><th class="num">Cantidad</th><th class="num">Costo / resultado</th></tr></thead>
+        <thead><tr><th>Campaña</th><th class="num">Gasto</th><th>Resultado (según Meta)</th><th class="num">Cantidad (Meta)</th><th class="num">Costo / resultado (Meta)</th><th class="num">Leads reales (Excel de Lu)</th><th class="num">Costo por lead real</th></tr></thead>
         <tbody>{meta_rows}</tbody>
       </table>
     </div>
@@ -1304,7 +1360,7 @@ TEMPLATE = r"""<!doctype html>
 
   <section id="canales">
     <h2>Leads por canal: CPL promedio y conversión a venta</h2>
-    <p class="section-note">Leads reales, inversión, costo por lead y tasa de conversión a venta de cada canal, según el Excel de Lu (fila TOTAL), mes en curso. Los canales orgánicos no tienen gasto de pauta asociado, por eso no muestran CPL. No incluye las Campañas 1, 2 y 3 (BYD terminal), que son un negocio aparte y no están en este Excel.</p>
+    <p class="section-note">Leads reales, inversión y costo por lead de cada canal según el Excel de Lu (fila TOTAL de "INV x CONCE Proyección"); ventas por canal según la pestaña Resumen del mismo Excel, donde se consolida el origen de cada venta. Mes en curso. Los canales orgánicos no tienen gasto de pauta asociado, por eso no muestran CPL. No incluye las Campañas 1, 2 y 3 (BYD terminal), que son un negocio aparte y no están en este Excel.</p>
     <div class="dash-table-wrap">
       <table class="pulso-table">
         <thead><tr><th>Canal</th><th class="num">Leads</th><th class="num">Inversión</th><th class="num">CPL</th><th class="num">Ventas</th><th class="num">Tasa de conv. a venta</th></tr></thead>
