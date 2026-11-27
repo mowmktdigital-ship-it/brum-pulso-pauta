@@ -49,6 +49,8 @@ def main():
             'spend': f(m.group('cost')) or 0.0,
             'conversions': f(m.group('conv')) or 0.0,
             'lost_budget_pct': f(m.group('lost')),
+            'impressions': f(m.group('impr')),
+            'clicks': f(m.group('clicks')),
         })
     if not rows:
         print('No se encontraron campañas en el PDF')
